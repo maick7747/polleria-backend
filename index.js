@@ -3,14 +3,14 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 
-// Pega aquí tus credenciales de Supabase
-const SUPABASE_URL = 'https://mcfkcqwvlztyexqixfhk.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_Tn-ja9VLPY4FotqccphVew_e-Vs1eUP';
+// Credenciales de Supabase (variables de entorno para producción)
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mcfkcqwvlztyexqixfhk.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_Tn-ja9VLPY4FotqccphVew_e-Vs1eUP';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 app.get('/api/mensaje', async (req, res) => {
