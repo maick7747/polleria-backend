@@ -1,0 +1,28 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    # Cada 5 días a medianoche UTC (Supabase pausa después de 7 días)
+    - cron: '0 0 */5 * *'
+  workflow_dispatch:  # Para ejecutar manualmente desde GitHub
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase Database
+        run: |
+          echo "Haciendo ping a Supabase para evitar pausa..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/mensajes?select=texto&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_KEY }}")
+          
+          echo "Status code: $response"
+          
+          if [ "$response" = "200" ]; then
+            echo "✅ Supabase está activo"
+          else
+            echo "❌ Error: Supabase respondió con $response"
+            exit 1
+          fi
