@@ -1,0 +1,123 @@
+'use strict';
+
+/**
+ * Aplica las migraciones y el seed a PostgreSQL/Supabase.
+ *
+ * Uso:
+ *   1. Copia la cadena de conexión en backend/.env como DATABASE_URL
+ *   2. npm run db:apply
+ *
+ * No se ejecuta automáticamente. No imprime credenciales.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { Client } = require('pg');
+const env = require('../src/config/env');
+
+const FILES = [
+  'migrations/001_schema.sql',
+  'migrations/002_rbac_rls.sql',
+  'seed.sql',
+];
+
+const BASE = path.resolve(__dirname, '../db');
+
+function fail(message) {
+  console.error(`\n[db:apply] ${message}\n`);
+  process.exit(1);
+}
+
+function readSql(relative) {
+  const file = path.join(BASE, relative);
+  if (!fs.existsSync(file)) {
+    fail(`No existe el archivo: ${file}`);
+  }
+  return fs.readFileSync(file, 'utf8');
+}
+
+async function applyFile(client, relative) {
+  const sql = readSql(relative);
+  process.stdout.write(`→ ${relative} ... `);
+  await client.query('BEGIN');
+  try {
+    await client.query(sql);
+    await client.query('COMMIT');
+    console.log('OK');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.log('ERROR');
+    throw error;
+  }
+}
+
+async function verificar(client) {
+  const consultas = {
+    tablas: `select count(*)::int as n
+             from information_schema.tables
+             where table_schema = 'public' and table_type = 'BASE TABLE'`,
+    enums: `select count(*)::int as n
+            from pg_type t
+            join pg_namespace n on n.oid = t.typnamespace
+            where t.typtype = 'e' and n.nspname = 'public'`,
+    fks: `select count(*)::int as n
+          from information_schema.table_constraints
+          where constraint_schema = 'public' and constraint_type = 'FOREIGN KEY'`,
+  };
+
+  const resultado = {};
+  for (const [nombre, sql] of Object.entries(consultas)) {
+    const { rows } = await client.query(sql);
+    resultado[nombre] = rows[0].n;
+  }
+
+  console.log('\n[db:apply] Verificación:');
+  console.log(`  Tablas: ${resultado.tablas} (esperado 29)`);
+  console.log(`  ENUM:   ${resultado.enums} (esperado 25)`);
+  console.log(`  FK:     ${resultado.fks} (esperado 45)`);
+
+  if (resultado.tablas !== 29 || resultado.enums !== 25 || resultado.fks !== 45) {
+    console.warn(
+      '\n[db:apply] ADVERTENCIA: los conteos no coinciden. Revisa si había tablas/ENUM previos o si el esquema se aplicó parcialmente.',
+    );
+  }
+  return resultado;
+}
+
+async function main() {
+  const url = env.databaseUrl;
+  if (!url) {
+    fail(
+      'Falta DATABASE_URL (o SUPABASE_DB_URL) en backend/.env.\n' +
+        'Cópiala desde Supabase → Settings → Database → Connection string.\n' +
+        'No uses la publishable key: no puede ejecutar DDL.',
+    );
+  }
+
+  console.log('[db:apply] Conectando a PostgreSQL...');
+  const client = new Client({
+    connectionString: url,
+    ssl: url.includes('supabase.co') || url.includes('pooler.supabase.com')
+      ? { rejectUnauthorized: false }
+      : undefined,
+    application_name: 'fratellis-db-apply',
+  });
+
+  try {
+    await client.connect();
+    console.log('[db:apply] Conexión OK. Aplicando archivos...\n');
+
+    for (const file of FILES) {
+      await applyFile(client, file);
+    }
+
+    await verificar(client);
+    console.log('\n[db:apply] Listo. Reinicia el backend con DB_MODE=supabase cuando corresponda.\n');
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+main();
