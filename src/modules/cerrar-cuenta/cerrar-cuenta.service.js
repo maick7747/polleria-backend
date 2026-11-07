@@ -13,6 +13,7 @@ const {
 } = require('../../middleware/validate');
 const pedidosLib = require('../../lib/pedidos');
 const pedidosDb = require('../../lib/pedidos-db');
+const sunat = require('../../lib/sunat');
 
 const METODOS = ['efectivo', 'tarjeta', 'yape', 'plin', 'transferencia'];
 
@@ -189,6 +190,14 @@ async function cobrarCuenta(id, body, usuario) {
     cuenta.usuario_cierre_id = usuario.id;
     cuenta.comprobante_numero = numero;
 
+    const sunatInicial = sunat.estadoInicial();
+    cuenta.sunat_modo = sunatInicial.modo;
+    cuenta.sunat_estado = sunatInicial.estado;
+    cuenta.sunat_codigo = null;
+    cuenta.sunat_mensaje = sunatInicial.mensaje;
+    cuenta.sunat_ticket = null;
+    cuenta.sunat_fecha_envio = null;
+
     const mesa = store.find('mesas', cuenta.mesa_id);
     if (mesa) {
       mesa.estado = 'libre';
@@ -210,6 +219,7 @@ async function cobrarCuenta(id, body, usuario) {
         numero,
         total,
         fecha: ahora,
+        sunat: sunat.estadoDeCuenta(cuenta),
       },
       vuelto: store.round2(Math.max(0, montoEntregado - total)),
     };
@@ -257,12 +267,20 @@ async function cobrarCuenta(id, body, usuario) {
     });
   }
 
+  const sunatInicial = sunat.estadoInicial();
+
   await repository.update('cuentas', cuenta.id, {
     estado: 'cobrada',
     total,
     fecha_cierre: ahora,
     usuario_cierre_id: usuario.id,
     comprobante_numero: numero,
+    sunat_modo: sunatInicial.modo,
+    sunat_estado: sunatInicial.estado,
+    sunat_codigo: null,
+    sunat_mensaje: sunatInicial.mensaje,
+    sunat_ticket: null,
+    sunat_fecha_envio: null,
   });
 
   await repository.update('mesas', cuenta.mesa_id, { estado: 'libre' });
@@ -283,6 +301,7 @@ async function cobrarCuenta(id, body, usuario) {
       numero,
       total,
       fecha: ahora,
+      sunat: { ...sunatInicial },
     },
     vuelto: store.round2(Math.max(0, montoEntregado - total)),
   };
@@ -321,7 +340,53 @@ async function comprobanteCuenta(id) {
     igv: detalle.igv,
     total: Number(cuenta.total),
     items,
-    sunat: { modo: 'simulado', estado: 'no_enviado' },
+    sunat: sunat.estadoDeCuenta(cuenta),
+  };
+}
+
+async function cargarCuenta(id) {
+  return db.isSupabase()
+    ? db.findOrThrow('cuentas', parseId(id), 'Cuenta')
+    : store.findOrThrow('cuentas', parseId(id), 'Cuenta');
+}
+
+async function persistirEstadoSunat(cuenta, resultado) {
+  const patch = {
+    sunat_modo: resultado.modo,
+    sunat_estado: resultado.estado,
+    sunat_codigo: resultado.codigo,
+    sunat_mensaje: resultado.mensaje,
+    sunat_ticket: resultado.ticket,
+    sunat_fecha_envio: resultado.fecha_envio,
+  };
+
+  if (db.isSupabase()) {
+    await repository.update('cuentas', cuenta.id, patch);
+  } else {
+    Object.assign(cuenta, patch);
+  }
+
+  return patch;
+}
+
+// Envía (o reintenta enviar) el comprobante de una cuenta cobrada al proveedor
+// SUNAT configurado. Nunca lanza por un fallo del proveedor: devuelve
+// estado 'error' para que la caja no se bloquee.
+async function enviarComprobante(id) {
+  const cuenta = await cargarCuenta(id);
+
+  if (cuenta.estado !== 'cobrada' || !cuenta.comprobante_numero) {
+    throw new AppError(409, 'CONFLICT', 'El comprobante se genera al cerrar y cobrar la cuenta.');
+  }
+
+  const comprobante = await comprobanteCuenta(cuenta.id);
+  const resultado = await sunat.enviar(comprobante);
+  await persistirEstadoSunat(cuenta, resultado);
+
+  return {
+    cuenta_id: cuenta.id,
+    numero: cuenta.comprobante_numero,
+    sunat: resultado,
   };
 }
 
@@ -415,5 +480,6 @@ module.exports = {
   listPagos,
   cobrarCuenta,
   comprobanteCuenta,
+  enviarComprobante,
   cancelarCuenta,
 };

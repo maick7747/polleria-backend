@@ -52,6 +52,28 @@ const env = {
   tokenTtlSec: asNumber(process.env.TOKEN_TTL_SEC, 1800),
   corsOrigin: process.env.CORS_ORIGIN || '*',
   logRequests: process.env.LOG_REQUESTS !== '0',
+
+  // Integraciones — validación de documentos (patrón Strategy).
+  documentoProvider: process.env.DOCUMENTO_PROVIDER || 'mock',
+  documentoFallback: process.env.DOCUMENTO_FALLBACK || 'mock',
+  documentoTimeoutMs: asNumber(process.env.DOCUMENTO_TIMEOUT_MS, 5000),
+  documentoCacheTtlSec: asNumber(process.env.DOCUMENTO_CACHE_TTL_SEC, 86400),
+  apiperuBaseUrl: process.env.APIPERU_BASE_URL || 'https://api.apiperu.dev',
+  apiperuToken: process.env.APIPERU_TOKEN || '',
+  openrucBaseUrl: process.env.OPENRUC_BASE_URL || 'https://openruc.com',
+
+  // Integraciones — emisión SUNAT (patrón Strategy).
+  sunatMode: process.env.SUNAT_MODE || 'simulado',
+  sunatApiUrl: process.env.SUNAT_API_URL || '',
+  sunatApiKey: process.env.SUNAT_API_KEY || '',
+  sunatBetaUrl: process.env.SUNAT_BETA_URL || '',
+  sunatProduccionUrl: process.env.SUNAT_PRODUCCION_URL || '',
+  sunatRuc: process.env.SUNAT_RUC || '',
+  sunatRazonSocial: process.env.SUNAT_RAZON_SOCIAL || "FRATELLI'S RESTAURANTE",
+  sunatUsuarioSol: process.env.SUNAT_USUARIO_SOL || '',
+  sunatClaveSol: process.env.SUNAT_CLAVE_SOL || '',
+  sunatCertificadoRuta: process.env.SUNAT_CERTIFICADO_RUTA || '',
+  sunatTimeoutMs: asNumber(process.env.SUNAT_TIMEOUT_MS, 15000),
 };
 
 module.exports = env;

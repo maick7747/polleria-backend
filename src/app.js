@@ -26,6 +26,7 @@ const cuadreCajaRoutes = require('./modules/cuadre-caja/cuadre-caja.routes');
 const reportesRoutes = require('./modules/reportes/reportes.routes');
 const activosRoutes = require('./modules/activos/activos.routes');
 const configuracionRoutes = require('./modules/configuracion/configuracion.routes');
+const integracionesRoutes = require('./modules/integraciones/integraciones.routes');
 
 const app = express();
 
@@ -98,6 +99,7 @@ protectedApi.use('/reportes', reportesRoutes);
 protectedApi.use('/activos', activosRoutes);
 protectedApi.use('/mantenimientos', activosRoutes.mantenimientosRouter);
 protectedApi.use('/', configuracionRoutes);
+protectedApi.use('/integraciones', integracionesRoutes);
 
 app.use('/api', protectedApi);
 

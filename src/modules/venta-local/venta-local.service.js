@@ -17,6 +17,7 @@ const {
 } = require('../../middleware/validate');
 const pedidos = require('../../lib/pedidos');
 const pedidosDb = require('../../lib/pedidos-db');
+const documentoProviders = require('./providers/documento');
 
 function fechaLima(iso) {
   if (!iso) {
@@ -814,20 +815,10 @@ async function validarDocumento(body) {
   const payload = requiredObject(body);
   const tipo = requiredEnum(payload.tipo_documento, 'tipo_documento', ['DNI', 'RUC']);
   const numero = requiredString(payload.numero_documento, 'numero_documento', { max: 11 });
-  const valido = tipo === 'DNI' ? /^\d{8}$/.test(numero) : /^\d{11}$/.test(numero);
 
-  return {
-    valido,
-    modo: 'sandbox',
-    tipo_documento: tipo,
-    numero_documento: numero,
-    nombre: valido
-      ? tipo === 'DNI'
-        ? 'Cliente Demo DNI'
-        : 'Empresa Demo RUC'
-      : null,
-    motivo: valido ? null : `El ${tipo} debe tener ${tipo === 'DNI' ? 8 : 11} dígitos.`,
-  };
+  // Patrón Strategy: el proveedor se resuelve por DOCUMENTO_PROVIDER y, si
+  // falla, se intenta DOCUMENTO_FALLBACK. Nunca bloquea la venta.
+  return documentoProviders.validarDocumento({ tipo, numero });
 }
 
 module.exports = {

@@ -22,6 +22,10 @@ router.get('/cuentas/:id/comprobante', requirePermiso('venta.registrar', 'caja.c
   res.json(await service.comprobanteCuenta(req.params.id));
 });
 
+router.post('/cuentas/:id/comprobante/enviar', requirePermiso('caja.cobrar'), async (req, res) => {
+  res.json(await service.enviarComprobante(req.params.id));
+});
+
 router.post('/cuentas/:id/cancelar', requirePermiso('caja.cobrar'), async (req, res) => {
   res.json(await service.cancelarCuenta(req.params.id, req.body, req.usuario));
 });
@@ -42,6 +46,10 @@ aliasRouter.post('/:id/cobrar', requirePermiso('caja.cobrar'), async (req, res) 
 
 aliasRouter.get('/:id/comprobante', requirePermiso('venta.registrar', 'caja.cobrar'), async (req, res) => {
   res.json(await service.comprobanteCuenta(req.params.id));
+});
+
+aliasRouter.post('/:id/comprobante/enviar', requirePermiso('caja.cobrar'), async (req, res) => {
+  res.json(await service.enviarComprobante(req.params.id));
 });
 
 aliasRouter.post('/:id/cancelar', requirePermiso('caja.cobrar'), async (req, res) => {

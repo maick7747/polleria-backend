@@ -18,6 +18,7 @@ const env = require('../src/config/env');
 const FILES = [
   'migrations/001_schema.sql',
   'migrations/002_rbac_rls.sql',
+  'migrations/003_sunat_envio.sql',
   'seed.sql',
 ];
 
