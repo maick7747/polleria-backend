@@ -12,6 +12,7 @@ const {
   requiredEnum,
   optionalNumber,
   optionalDate,
+  pageParams,
   paginate,
   parseId,
 } = require('../../middleware/validate');
@@ -763,20 +764,27 @@ async function listPedidos(query = {}) {
   if (canal) {
     filters.canal = canal;
   }
+  if (desde || hasta) {
+    filters.fecha_pedido = {
+      op: 'between',
+      value: [
+        `${desde || '1970-01-01'}T00:00:00-05:00`,
+        `${hasta || '2999-12-31'}T23:59:59.999-05:00`,
+      ],
+    };
+  }
 
-  const { data } = await repository.list('pedidos', {
+  const { page, limit } = pageParams(query);
+  const { data, meta } = await repository.list('pedidos', {
     filters,
     orderBy: 'id',
     ascending: false,
-    limit: 100,
+    page,
+    limit,
   });
 
-  const filtrados = data
-    .filter((pedido) => !desde || fechaLima(pedido.fecha_pedido) >= desde)
-    .filter((pedido) => !hasta || fechaLima(pedido.fecha_pedido) <= hasta);
-
-  const mapped = await Promise.all(filtrados.map((pedido) => pedidosDb.pedidoConDetalles(pedido)));
-  return paginate(mapped, query);
+  const mapped = await Promise.all(data.map((pedido) => pedidosDb.pedidoConDetalles(pedido)));
+  return { data: mapped, meta };
 }
 
 async function getPedido(id) {

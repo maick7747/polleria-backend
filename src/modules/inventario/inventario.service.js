@@ -52,6 +52,23 @@ function insumoResumen(insumo) {
   };
 }
 
+function totalesInventario(insumos) {
+  const totalOk = insumos.filter((insumo) => insumo.estado === 'ok').length;
+  const totalBajo = insumos.filter((insumo) => insumo.estado === 'bajo').length;
+  const totalCritico = insumos.filter((insumo) => insumo.estado === 'critico').length;
+  const valorInventario = store.round2(
+    insumos.reduce((suma, insumo) => suma + Number(insumo.valor_stock || 0), 0),
+  );
+  return {
+    total_insumos: insumos.length,
+    total_ok: totalOk,
+    total_bajo: totalBajo,
+    total_critico: totalCritico,
+    total_alertas: totalBajo + totalCritico,
+    valor_inventario: valorInventario,
+  };
+}
+
 async function listInventario(query = {}) {
   const estado = query.estado ? String(query.estado) : null;
   const q = query.q ? String(query.q).trim().toLowerCase() : '';
@@ -62,19 +79,20 @@ async function listInventario(query = {}) {
   }
 
   if (!db.isSupabase()) {
-    const data = store.state.insumos
+    const todos = store.state.insumos
       .filter((insumo) => insumo.activo)
       .map(insumoResumen)
-      .filter((insumo) => !estado || insumo.estado === estado)
-      .filter((insumo) => !q || insumo.nombre.toLowerCase().includes(q) || insumo.codigo.toLowerCase().includes(q))
       .sort((a, b) => a.nombre.localeCompare(b.nombre));
+    const data = todos
+      .filter((insumo) => !estado || insumo.estado === estado)
+      .filter((insumo) => !q || insumo.nombre.toLowerCase().includes(q) || insumo.codigo.toLowerCase().includes(q));
 
     const resultado = paginate(data, query);
     return {
       ...resultado,
       meta: {
         ...resultado.meta,
-        total_alertas: data.filter((insumo) => insumo.estado !== 'ok').length,
+        ...totalesInventario(todos),
       },
     };
   }
@@ -83,20 +101,21 @@ async function listInventario(query = {}) {
     filters: { activo: true },
     orderBy: 'nombre',
     ascending: true,
-    limit: 100,
+    limit: 1000,
   });
-  const data2 = data
+  const todos = data
     .map(insumoResumen)
-    .filter((insumo) => !estado || insumo.estado === estado)
-    .filter((insumo) => !q || insumo.nombre.toLowerCase().includes(q) || insumo.codigo.toLowerCase().includes(q))
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const data2 = todos
+    .filter((insumo) => !estado || insumo.estado === estado)
+    .filter((insumo) => !q || insumo.nombre.toLowerCase().includes(q) || insumo.codigo.toLowerCase().includes(q));
 
   const resultado = paginate(data2, query);
   return {
     ...resultado,
     meta: {
       ...resultado.meta,
-      total_alertas: data2.filter((insumo) => insumo.estado !== 'ok').length,
+      ...totalesInventario(todos),
     },
   };
 }
@@ -115,7 +134,7 @@ async function listAlertas() {
     filters: { activo: true },
     orderBy: 'nombre',
     ascending: true,
-    limit: 100,
+    limit: 1000,
   });
   const data2 = data
     .filter((insumo) => Number(insumo.stock_actual) <= Number(insumo.stock_minimo))

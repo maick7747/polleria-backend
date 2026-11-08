@@ -16,7 +16,7 @@ router.get('/comandas', permisoKds, async (req, res) => {
 });
 
 router.get('/pedidos-listos', permisoKds, async (req, res) => {
-  res.json(await service.pedidosListos());
+  res.json(await service.pedidosListos(req.query));
 });
 
 router.patch('/pedidos/:pedidoId/platos/:detalleId/estado', permisoKds, async (req, res) => {
@@ -34,7 +34,7 @@ router.get('/metricas', permisoKds, async (req, res) => {
 const listosRouter = express.Router();
 
 listosRouter.get('/pedidos-listos', requirePermiso('venta.registrar', 'cocina.kds'), async (req, res) => {
-  res.json(await service.pedidosListos());
+  res.json(await service.pedidosListos(req.query));
 });
 
 module.exports = router;

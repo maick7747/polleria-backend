@@ -149,6 +149,7 @@ function matchesFilter(value, filter) {
       case 'lt': return value < expected;
       case 'lte': return value <= expected;
       case 'in': return Array.isArray(expected) && expected.includes(value);
+      case 'between': return Array.isArray(expected) && value >= expected[0] && value <= expected[1];
       case 'is': return value === expected;
       case 'like': return String(value ?? '').includes(String(expected ?? '').replace(/%/g, ''));
       case 'ilike': return String(value ?? '').toLowerCase().includes(String(expected ?? '').replace(/%/g, '').toLowerCase());
@@ -215,6 +216,7 @@ function applySupabaseFilters(query, filters = {}) {
         case 'like': next = next.like(column, value); break;
         case 'ilike': next = next.ilike(column, value); break;
         case 'in': next = next.in(column, value); break;
+        case 'between': next = next.gte(column, value[0]).lte(column, value[1]); break;
         case 'is': next = next.is(column, value); break;
         default:
           throw new Error(`Operador de filtro no soportado: ${op}`);

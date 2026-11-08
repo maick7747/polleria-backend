@@ -8,6 +8,8 @@ const {
   requiredObject,
   requiredEnum,
   optionalDate,
+  pageParams,
+  paginate,
   parseId,
 } = require('../../middleware/validate');
 const pedidosLib = require('../../lib/pedidos');
@@ -452,10 +454,15 @@ async function metricas(query = {}) {
   };
 }
 
-async function pedidosListos() {
+async function pedidosListos(query = {}) {
+  const desde = optionalDate(query.desde, 'desde');
+  const hasta = optionalDate(query.hasta, 'hasta');
+
   if (!db.isSupabase()) {
     const data = store.state.pedidos
       .filter((pedido) => pedido.estado === 'servido' && pedido.estado_pago !== 'pagado')
+      .filter((pedido) => !desde || fechaLima(pedido.fecha_listo) >= desde)
+      .filter((pedido) => !hasta || fechaLima(pedido.fecha_listo) <= hasta)
       .sort((a, b) => (b.fecha_listo || b.fecha_pedido).localeCompare(a.fecha_listo || a.fecha_pedido))
       .map((pedido) => {
         const detalle = pedidosLib.pedidoConDetalles(pedido);
@@ -473,22 +480,42 @@ async function pedidosListos() {
         };
       });
 
-    return { data, meta: { total: data.length, generado_en: store.nowIso() } };
+    const resultado = paginate(data, query);
+    return {
+      ...resultado,
+      meta: { ...resultado.meta, generado_en: store.nowIso() },
+    };
   }
 
-  const { data: pedidos } = await repository.list('pedidos', {
-    filters: { estado: 'servido' },
+  const filters = {
+    estado: 'servido',
+    estado_pago: { op: 'neq', value: 'pagado' },
+  };
+  if (desde || hasta) {
+    filters.fecha_listo = {
+      op: 'between',
+      value: [
+        `${desde || '1970-01-01'}T00:00:00-05:00`,
+        `${hasta || '2999-12-31'}T23:59:59.999-05:00`,
+      ],
+    };
+  }
+
+  const { page, limit } = pageParams(query);
+  const { data: pedidos, meta } = await repository.list('pedidos', {
+    filters,
     orderBy: 'fecha_listo',
     ascending: false,
-    limit: 100,
+    page,
+    limit,
   });
-  const pendientes = pedidos.filter((pedido) => pedido.estado_pago !== 'pagado');
+
   const [detallesMap, mesasMap] = await Promise.all([
-    detallesDeVarios(pendientes.map((pedido) => pedido.id)),
-    mesasPorId(pendientes),
+    detallesDeVarios(pedidos.map((pedido) => pedido.id)),
+    mesasPorId(pedidos),
   ]);
 
-  const data = pendientes.map((pedido) => ({
+  const data = pedidos.map((pedido) => ({
     id: pedido.id,
     numero: pedido.numero,
     canal: pedido.canal,
@@ -500,7 +527,7 @@ async function pedidosListos() {
     detalles: detallesMap.get(pedido.id) || [],
   }));
 
-  return { data, meta: { total: data.length, generado_en: db.nowIso() } };
+  return { data, meta: { ...meta, generado_en: db.nowIso() } };
 }
 
 module.exports = {

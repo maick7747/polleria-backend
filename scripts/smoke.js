@@ -186,6 +186,47 @@ function resumen(value) {
       }
     }
 
+    const inventarioPagina = await request(base, 'GET', '/inventario?page=1&limit=5', { token });
+    const inventarioMetaOk =
+      inventarioPagina.ok &&
+      Array.isArray(inventarioPagina.body.data) &&
+      inventarioPagina.body.data.length <= 5 &&
+      typeof inventarioPagina.body.meta?.total_insumos === 'number' &&
+      typeof inventarioPagina.body.meta?.valor_inventario === 'number';
+    results.push({
+      name: 'GET /api/inventario (paginado + meta)',
+      status: inventarioMetaOk ? 200 : 500,
+      detail: inventarioMetaOk
+        ? `${inventarioPagina.body.data.length}/${inventarioPagina.body.meta.total_insumos} · alertas ${inventarioPagina.body.meta.total_alertas}`
+        : JSON.stringify(inventarioPagina.body),
+    });
+    if (!inventarioMetaOk) {
+      throw new Error('El inventario no devolvió paginación/meta completos.');
+    }
+
+    const listosPagina = await request(
+      base,
+      'GET',
+      '/pedidos-listos?page=1&limit=5&desde=2026-01-01',
+      { token },
+    );
+    const listosMetaOk =
+      listosPagina.ok &&
+      Array.isArray(listosPagina.body.data) &&
+      listosPagina.body.data.length <= 5 &&
+      typeof listosPagina.body.meta?.total === 'number' &&
+      typeof listosPagina.body.meta?.pages === 'number';
+    results.push({
+      name: 'GET /api/pedidos-listos (paginado)',
+      status: listosMetaOk ? 200 : 500,
+      detail: listosMetaOk
+        ? `${listosPagina.body.data.length}/${listosPagina.body.meta.total} · páginas ${listosPagina.body.meta.pages}`
+        : JSON.stringify(listosPagina.body),
+    });
+    if (!listosMetaOk) {
+      throw new Error('Pedidos listos no respetó page/limit/desde.');
+    }
+
     const cuentas = await request(base, 'GET', '/cuentas?estado=abierta&limit=10', { token });
     const listaCuentas = Array.isArray(cuentas.body && cuentas.body.data) ? cuentas.body.data : [];
     const sinNombre = listaCuentas.filter(
