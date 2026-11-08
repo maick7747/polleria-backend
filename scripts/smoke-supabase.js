@@ -192,34 +192,62 @@ function stop(child) {
 
     // Se elige un platillo sin ficha técnica para no consumir stock del seed.
     const platilloId = await platilloSinFicha();
+    const claveRonda = `smoke-supabase-${Date.now()}`;
+    const cuerpoRonda = {
+      items: [{ platillo_id: platilloId, cantidad: 1 }],
+      idempotency_key: claveRonda,
+      enviar_cocina: true,
+    };
     const ronda = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
       token,
-      body: { items: [{ platillo_id: platilloId, cantidad: 1 }] },
+      body: cuerpoRonda,
     });
     push(
-      'POST /api/cuentas/:id/pedidos',
+      'POST /api/cuentas/:id/pedidos (enviar_cocina)',
       ronda.status,
-      ronda.ok ? `pedido ${ronda.body.numero}` : JSON.stringify(ronda.body),
+      ronda.ok
+        ? `pedido ${ronda.body.numero} · estado=${ronda.body.estado} · mov=${ronda.body.movimientos_inventario}`
+        : JSON.stringify(ronda.body),
     );
     if (!ronda.ok) {
       throw new Error(`Agregar ronda falló: ${JSON.stringify(ronda.body)}`);
     }
     const pedidoId = ronda.body.id;
 
-    const envio = await request(base, 'POST', `/pedidos/${pedidoId}/enviar-cocina`, {
-      token,
-    });
-    push(
-      'POST /api/pedidos/:id/enviar-cocina',
-      envio.status,
-      envio.ok ? `estado=${envio.body.estado} · movimientos=${envio.body.movimientos_inventario}` : JSON.stringify(envio.body),
-    );
-    if (!envio.ok) {
+    let envio = ronda;
+    if (ronda.body.estado !== 'en_cocina') {
+      envio = await request(base, 'POST', `/pedidos/${pedidoId}/enviar-cocina`, {
+        token,
+      });
+      push(
+        'POST /api/pedidos/:id/enviar-cocina (fallback)',
+        envio.status,
+        envio.ok ? `estado=${envio.body.estado} · movimientos=${envio.body.movimientos_inventario}` : JSON.stringify(envio.body),
+      );
+    }
+    if (!envio.ok || envio.body.estado !== 'en_cocina') {
       throw new Error(`Enviar a cocina falló: ${JSON.stringify(envio.body)}`);
     }
     const detalleId = (envio.body.detalles || [])[0]?.id;
     if (!detalleId) {
       throw new Error('El pedido no devolvió líneas de detalle.');
+    }
+
+    const duplicado = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
+      token,
+      body: cuerpoRonda,
+    });
+    const idempotenteOk =
+      duplicado.ok && duplicado.body.idempotente === true && duplicado.body.id === pedidoId;
+    push(
+      'POST /api/cuentas/:id/pedidos (idempotente)',
+      idempotenteOk ? duplicado.status : 500,
+      idempotenteOk
+        ? `id=${duplicado.body.id} · sin duplicar total`
+        : JSON.stringify(duplicado.body),
+    );
+    if (!idempotenteOk) {
+      throw new Error(`La idempotencia falló: ${JSON.stringify(duplicado.body)}`);
     }
 
     const kds = await request(base, 'GET', '/kds/pedidos', { token });

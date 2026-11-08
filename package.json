@@ -10,6 +10,7 @@
     "smoke:supabase": "node scripts/smoke-supabase.js",
     "verify": "node scripts/verify-rules.js",
     "verify:integraciones": "node scripts/verify-integraciones.js",
+    "e2e:ronda": "node scripts/e2e-ronda.js",
     "db:apply": "node scripts/db-apply.js"
   },
   "keywords": [

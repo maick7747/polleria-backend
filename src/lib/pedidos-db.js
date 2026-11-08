@@ -433,6 +433,117 @@ async function enviarPedidoACocina(pedido, usuarioId) {
   };
 }
 
+function traducirErrorRpc(error) {
+  const mensaje = [error && error.message, error && error.details, error && error.hint]
+    .filter(Boolean)
+    .join(' ');
+
+  const stock = mensaje.match(/STOCK_INSUFICIENTE:\s*(.+)$/i);
+  if (stock) {
+    const nombre = stock[1].trim();
+    return new AppError(409, 'STOCK_INSUFICIENTE', `No hay stock suficiente de ${nombre}.`, [
+      { insumo: nombre },
+    ]);
+  }
+
+  const insumo = mensaje.match(/INSUMO_NO_ENCONTRADO:\s*(.+)$/i);
+  if (insumo) {
+    return new AppError(404, 'NOT_FOUND', `Insumo con id ${insumo[1].trim()} no existe.`);
+  }
+
+  if (/CUENTA_NO_ENCONTRADA/i.test(mensaje)) {
+    return new AppError(404, 'NOT_FOUND', 'La cuenta no existe.');
+  }
+  if (/CUENTA_NO_ABIERTA/i.test(mensaje)) {
+    return new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
+  }
+  if (/CAJA_CERRADA/i.test(mensaje)) {
+    return new AppError(
+      409,
+      'CAJA_CERRADA',
+      'La caja del día está cerrada. Abra el cuadre de caja para operar.',
+    );
+  }
+  if (/PLATILLO_NO_ENCONTRADO/i.test(mensaje)) {
+    return new AppError(404, 'NOT_FOUND', 'Uno de los platillos no existe.');
+  }
+
+  const platilloInactivo = mensaje.match(/PLATILLO_INACTIVO:\s*(.+)$/i);
+  if (platilloInactivo) {
+    return new AppError(
+      422,
+      'BUSINESS_RULE_VIOLATION',
+      `El platillo "${platilloInactivo[1].trim()}" está inactivo.`,
+    );
+  }
+
+  if (/ITEMS_REQUERIDOS/i.test(mensaje)) {
+    return new AppError(400, 'VALIDATION_ERROR', 'Debe enviar al menos un ítem.');
+  }
+
+  const item = mensaje.match(/ITEM_INVALIDO:\s*(.+)$/i);
+  if (item) {
+    return new AppError(400, 'VALIDATION_ERROR', item[1].trim());
+  }
+
+  return null;
+}
+
+function rondaDesdeRpc(data) {
+  const payload = data && typeof data === 'object' ? data : {};
+  const pedido = payload.pedido && typeof payload.pedido === 'object' ? payload.pedido : {};
+  const detalles = Array.isArray(payload.detalles)
+    ? payload.detalles.map((detail) => ({
+        ...detail,
+        precio_unitario: Number(detail.precio_unitario),
+        subtotal: Number(detail.subtotal),
+      }))
+    : [];
+
+  const resultado = {
+    ...pedido,
+    origen: 'rpc',
+    subtotal: Number(pedido.subtotal),
+    igv: Number(pedido.igv),
+    total: Number(pedido.total),
+    comision_plataforma: Number(pedido.comision_plataforma),
+    costo_delivery: Number(pedido.costo_delivery),
+    mesa_numero: payload.mesa_numero ?? null,
+    cliente_nombre: null,
+    repartidor_nombre: null,
+    detalles,
+    movimientos_inventario: Number(payload.movimientos) || 0,
+  };
+
+  if (payload.idempotente === true) {
+    resultado.idempotente = true;
+  }
+
+  return resultado;
+}
+
+async function crearRondaYEnviarRpc(options) {
+  const {
+    cuentaId,
+    usuarioId,
+    items,
+    observaciones = null,
+    idempotencyKey = null,
+    enviar = false,
+  } = options;
+
+  const data = await repository.rpc('fn_crear_ronda_y_enviar', {
+    p_cuenta_id: Number(cuentaId),
+    p_usuario_id: Number(usuarioId),
+    p_items: Array.isArray(items) ? items : [],
+    p_observaciones: observaciones ?? null,
+    p_idempotency_key: idempotencyKey ?? null,
+    p_enviar: Boolean(enviar),
+  });
+
+  return rondaDesdeRpc(data);
+}
+
 module.exports = {
   CANALES,
   TIPOS_CONSUMO,
@@ -447,4 +558,6 @@ module.exports = {
   revertirStockPedido,
   enviarPedidoACocina,
   movimientosDePedido,
+  crearRondaYEnviarRpc,
+  traducirErrorRpc,
 };

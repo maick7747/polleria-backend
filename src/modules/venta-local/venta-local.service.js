@@ -575,10 +575,23 @@ function parseIdempotencyKey(value) {
   return requiredString(value, 'idempotency_key', { max: 64 });
 }
 
+function parseEnviarCocina(value) {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value !== 'boolean') {
+    throw new AppError(400, 'VALIDATION_ERROR', 'enviar_cocina debe ser booleano.', [
+      { field: 'enviar_cocina' },
+    ]);
+  }
+  return value;
+}
+
 async function addRonda(cuentaId, body, usuario) {
   const id = parseId(cuentaId);
   const payload = requiredObject(body);
   const idempotencyKey = parseIdempotencyKey(payload.idempotency_key);
+  const enviarCocina = parseEnviarCocina(payload.enviar_cocina);
 
   if (!db.isSupabase()) {
     const cuenta = store.findOrThrow('cuentas', id, 'Cuenta');
@@ -609,7 +622,44 @@ async function addRonda(cuentaId, body, usuario) {
     });
 
     cuenta.total = store.round2(cuenta.total + pedido.total);
-    return pedidos.pedidoConDetalles(pedido);
+
+    if (!enviarCocina) {
+      return pedidos.pedidoConDetalles(pedido);
+    }
+
+    try {
+      const envio = pedidos.enviarPedidoACocina(pedido, usuario.id);
+      return {
+        ...pedidos.pedidoConDetalles(envio.pedido),
+        movimientos_inventario: envio.movimientos.length,
+      };
+    } catch (error) {
+      if (pedido.stock_descontado === true) {
+        pedidos.revertirStockPedido(pedido, usuario.id, 'No se pudo enviar a cocina');
+      }
+      pedido.estado = 'cancelado';
+      cuenta.total = store.round2(Math.max(0, cuenta.total - pedido.total));
+      throw error;
+    }
+  }
+
+  try {
+    return await pedidosDb.crearRondaYEnviarRpc({
+      cuentaId: id,
+      usuarioId: usuario.id,
+      items: payload.items,
+      observaciones: payload.observaciones,
+      idempotencyKey,
+      enviar: enviarCocina,
+    });
+  } catch (error) {
+    if (!repository.esFuncionInexistente(error)) {
+      const traducido = pedidosDb.traducirErrorRpc(error);
+      if (traducido) {
+        throw traducido;
+      }
+      throw db.persistenceError('No se pudo registrar la ronda.', error);
+    }
   }
 
   const cuenta = await db.findOrThrow('cuentas', id, 'Cuenta');
@@ -659,8 +709,29 @@ async function addRonda(cuentaId, body, usuario) {
     `La ronda ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
   );
 
-  // Los detalles ya vienen del insert (evita 2 SELECT extra en la respuesta).
-  return pedidosDb.pedidoConDetalles(pedido, { detalles: pedido.detalles });
+  if (!enviarCocina) {
+    return pedidosDb.pedidoConDetalles(pedido, { detalles: pedido.detalles });
+  }
+
+  try {
+    const envio = await pedidosDb.enviarPedidoACocina(pedido, usuario.id);
+    const detalle = await pedidosDb.pedidoConDetalles(envio.pedido, { detalles: envio.detalles });
+    return {
+      ...detalle,
+      movimientos_inventario: envio.movimientos.length,
+    };
+  } catch (error) {
+    await pedidosDb
+      .revertirStockPedido(pedido, usuario.id, 'No se pudo enviar a cocina')
+      .catch(() => []);
+    await repository.update('pedidos', pedido.id, { estado: 'cancelado' }).catch(() => null);
+    await ajustarTotalCuenta(
+      cuenta,
+      -Number(pedido.total),
+      `La ronda ${pedido.numero} no se pudo enviar a cocina y no se pudo ajustar el total.`,
+    ).catch(() => null);
+    throw error;
+  }
 }
 
 async function listPedidos(query = {}) {

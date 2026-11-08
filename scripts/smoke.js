@@ -257,6 +257,28 @@ function resumen(value) {
       );
     }
 
+    const rondaEnvio = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
+      token,
+      body: {
+        items: [{ platillo_id: 4, cantidad: 1 }],
+        idempotency_key: `smoke-${Date.now()}-envio`,
+        enviar_cocina: true,
+      },
+    });
+    const envioOk = rondaEnvio.ok && rondaEnvio.body.estado === 'en_cocina';
+    results.push({
+      name: 'POST /api/cuentas/:id/pedidos (enviar_cocina)',
+      status: envioOk ? 201 : 500,
+      detail: envioOk
+        ? `id=${rondaEnvio.body.id}, estado=${rondaEnvio.body.estado}, mov=${rondaEnvio.body.movimientos_inventario}`
+        : JSON.stringify(rondaEnvio.body),
+    });
+    if (!envioOk) {
+      throw new Error(
+        `La ronda con enviar_cocina no quedó en cocina: ${JSON.stringify(rondaEnvio.body)}`,
+      );
+    }
+
     const documentoSmoke = '99999999';
     const clientePatch = await request(base, 'PATCH', `/cuentas/${cuentaId}/cliente`, {
       token,
