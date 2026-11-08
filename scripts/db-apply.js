@@ -19,6 +19,9 @@ const FILES = [
   'migrations/001_schema.sql',
   'migrations/002_rbac_rls.sql',
   'migrations/003_sunat_envio.sql',
+  'migrations/004_cliente_cuenta_idempotencia.sql',
+  'migrations/005_perf_indexes.sql',
+  'migrations/006_rpc_stock_total.sql',
   'seed.sql',
 ];
 

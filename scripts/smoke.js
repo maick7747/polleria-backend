@@ -152,6 +152,7 @@ function resumen(value) {
     const checks = [
       ['GET /api/dashboard', '/dashboard'],
       ['GET /api/venta-local/mesas', '/venta-local/mesas'],
+      ['GET /api/venta-local/tablero', '/venta-local/tablero'],
       ['GET /api/mesas', '/mesas'],
       ['GET /api/cocina/comandas', '/cocina/comandas'],
       ['GET /api/kds/pedidos', '/kds/pedidos'],
@@ -183,6 +184,113 @@ function resumen(value) {
       if (!response.ok) {
         throw new Error(`${name} devolvió ${response.status}: ${JSON.stringify(response.body)}`);
       }
+    }
+
+    const cuentas = await request(base, 'GET', '/cuentas?estado=abierta&limit=10', { token });
+    const listaCuentas = Array.isArray(cuentas.body && cuentas.body.data) ? cuentas.body.data : [];
+    const sinNombre = listaCuentas.filter(
+      (cuenta) => typeof cuenta.usuario_apertura_nombre !== 'string' || cuenta.usuario_apertura_nombre.length === 0,
+    );
+    results.push({
+      name: 'GET /api/cuentas (mozo)',
+      status: cuentas.status,
+      detail:
+        cuentas.ok && listaCuentas.length > 0 && sinNombre.length === 0
+          ? `${listaCuentas.length} cuentas con usuario_apertura_nombre`
+          : `faltan nombres en ${sinNombre.length}/${listaCuentas.length}`,
+    });
+    if (!cuentas.ok || listaCuentas.length === 0 || sinNombre.length > 0) {
+      throw new Error(`GET /api/cuentas no devolvió usuario_apertura_nombre: ${JSON.stringify(cuentas.body)}`);
+    }
+
+    const mesaId = listaCuentas[0].mesa_id;
+    const mesa = await request(base, 'GET', `/mesas/${mesaId}`, { token });
+    const nombreMesa = mesa.body && mesa.body.cuenta_abierta
+      ? mesa.body.cuenta_abierta.usuario_apertura_nombre
+      : null;
+    results.push({
+      name: 'GET /api/mesas/:id (mozo)',
+      status: mesa.status,
+      detail: nombreMesa ? `mozo=${nombreMesa}` : 'sin usuario_apertura_nombre',
+    });
+    if (!mesa.ok || !nombreMesa) {
+      throw new Error(`GET /api/mesas/${mesaId} no devolvió usuario_apertura_nombre`);
+    }
+
+    const cuentaId = listaCuentas[0].id;
+    const totalAntes = (await request(base, 'GET', `/cuentas/${cuentaId}`, { token })).body
+      .total_consolidado;
+    const idempotencyKey = `smoke-${Date.now()}-ronda`;
+    const ronda1 = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
+      token,
+      body: {
+        items: [{ platillo_id: 4, cantidad: 1 }],
+        idempotency_key: idempotencyKey,
+      },
+    });
+    const ronda2 = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
+      token,
+      body: {
+        items: [{ platillo_id: 4, cantidad: 1 }],
+        idempotency_key: idempotencyKey,
+      },
+    });
+    const totalDespues = (await request(base, 'GET', `/cuentas/${cuentaId}`, { token })).body
+      .total_consolidado;
+    const totalEsperado = Number((Number(totalAntes) + Number(ronda1.body.total)).toFixed(2));
+    const idempotenteOk =
+      ronda1.ok &&
+      ronda2.ok &&
+      ronda1.body.id === ronda2.body.id &&
+      ronda2.body.idempotente === true &&
+      Number(totalDespues) === totalEsperado;
+    results.push({
+      name: 'POST /api/cuentas/:id/pedidos (idempotente)',
+      status: idempotenteOk ? 201 : 500,
+      detail: idempotenteOk
+        ? `id=${ronda1.body.id}, total=${totalAntes} -> ${totalDespues}`
+        : `ids=${ronda1.body.id}/${ronda2.body.id}, total=${totalAntes} -> ${totalDespues} (esperado ${totalEsperado})`,
+    });
+    if (!idempotenteOk) {
+      throw new Error(
+        `La ronda no fue idempotente: ${JSON.stringify({ r1: ronda1.body, r2: ronda2.body, totalDespues, totalEsperado })}`,
+      );
+    }
+
+    const documentoSmoke = '99999999';
+    const clientePatch = await request(base, 'PATCH', `/cuentas/${cuentaId}/cliente`, {
+      token,
+      body: {
+        cliente: {
+          nombre: 'Cliente Smoke',
+          tipo_documento: 'DNI',
+          numero_documento: documentoSmoke,
+          telefono: '999999999',
+        },
+      },
+    });
+    const detalleCliente = await request(base, 'GET', `/cuentas/${cuentaId}`, { token });
+    const clienteGuardado = detalleCliente.body && detalleCliente.body.cliente;
+    const clienteOk =
+      clientePatch.ok &&
+      clientePatch.body.cliente_id != null &&
+      clientePatch.body.cliente &&
+      clientePatch.body.cliente.nombre === 'Cliente Smoke' &&
+      detalleCliente.ok &&
+      clienteGuardado &&
+      clienteGuardado.nombre === 'Cliente Smoke' &&
+      String(clienteGuardado.numero_documento) === documentoSmoke;
+    results.push({
+      name: 'PATCH /api/cuentas/:id/cliente',
+      status: clienteOk ? 200 : 500,
+      detail: clienteOk
+        ? `cliente_id=${clientePatch.body.cliente_id}, ${clienteGuardado.nombre}`
+        : `patch=${clientePatch.status}, detalle=${JSON.stringify(clienteGuardado)}`,
+    });
+    if (!clienteOk) {
+      throw new Error(
+        `El cliente no se persistió en la cuenta: ${JSON.stringify({ patch: clientePatch.body, detalle: clienteGuardado })}`,
+      );
     }
 
     console.log('\nSmoke test Fratelli\'s');

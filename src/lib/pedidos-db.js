@@ -21,32 +21,50 @@ const TIPOS_CONSUMO = ['sala', 'para_llevar', 'delivery'];
 
 async function buildDetalles(items) {
   const list = requiredArray(items, 'items', { max: 100 });
-  let subtotal = 0;
-  const detalles = [];
 
-  for (let index = 0; index < list.length; index += 1) {
-    const item = list[index];
+  // 1ra pasada: validar la forma de cada ítem sin ir a la BD.
+  const entradas = list.map((item, index) => {
     if (!item || typeof item !== 'object') {
       throw new AppError(400, 'VALIDATION_ERROR', `El ítem ${index + 1} no es válido.`, [
         { field: `items[${index}]` },
       ]);
     }
-    const platilloId = requiredInt(item.platillo_id, `items[${index}].platillo_id`, { min: 1 });
-    const cantidad = requiredInt(item.cantidad, `items[${index}].cantidad`, { min: 1, max: 999 });
-    const platillo = await db.findOrThrow('platillos', platilloId, 'Platillo');
+    return {
+      platilloId: requiredInt(item.platillo_id, `items[${index}].platillo_id`, { min: 1 }),
+      cantidad: requiredInt(item.cantidad, `items[${index}].cantidad`, { min: 1, max: 999 }),
+      notas: optionalString(item.notas, `items[${index}].notas`, { max: 200 }),
+    };
+  });
+
+  // 2da pasada: una sola consulta para todos los platillos (antes: 1 por ítem).
+  const platilloIds = [...new Set(entradas.map((entrada) => entrada.platilloId))];
+  const { data: platillos } = await repository.list('platillos', {
+    filters: { id: platilloIds },
+    limit: platilloIds.length,
+  });
+  const platillosPorId = new Map(platillos.map((platillo) => [platillo.id, platillo]));
+
+  let subtotal = 0;
+  const detalles = [];
+
+  for (const entrada of entradas) {
+    const platillo = platillosPorId.get(entrada.platilloId);
+    if (!platillo) {
+      throw new AppError(404, 'NOT_FOUND', `Platillo con id ${entrada.platilloId} no existe.`);
+    }
     if (!platillo.activo) {
       throw new AppError(422, 'BUSINESS_RULE_VIOLATION', `El platillo "${platillo.nombre}" está inactivo.`);
     }
-    const notas = optionalString(item.notas, `items[${index}].notas`, { max: 200 });
     const precio = Number(platillo.precio_venta);
-    const lineSubtotal = db.round2(cantidad * precio);
+    const lineSubtotal = db.round2(entrada.cantidad * precio);
     subtotal += lineSubtotal;
     detalles.push({
       platillo_id: platillo.id,
-      cantidad,
+      platillo_nombre: platillo.nombre,
+      cantidad: entrada.cantidad,
       precio_unitario: precio,
       subtotal: lineSubtotal,
-      notas,
+      notas: entrada.notas,
     });
   }
 
@@ -71,6 +89,7 @@ async function createPedidoRecord(options) {
     referencia_entrega = null,
     costo_delivery = 0,
     comision_plataforma = 0,
+    idempotency_key = null,
     fecha_pedido = db.nowIso(),
   } = options;
 
@@ -111,6 +130,7 @@ async function createPedidoRecord(options) {
     observaciones: observaciones
       ? requiredString(observaciones, 'observaciones', { max: 300 })
       : null,
+    idempotency_key: idempotency_key || null,
     comprobante_tipo: tipo_consumo === 'sala' ? 'boleta' : 'ticket',
     comprobante_numero: null,
     fecha_inicio_prep: null,
@@ -126,19 +146,20 @@ async function createPedidoRecord(options) {
     throw db.persistenceError('No se pudo registrar el pedido.', error);
   }
 
+  const filas = detalles.map((detail) => ({
+    pedido_id: pedido.id,
+    platillo_id: detail.platillo_id,
+    cantidad: detail.cantidad,
+    precio_unitario: detail.precio_unitario,
+    notas: detail.notas,
+    estado_preparacion: 'pendiente',
+    fecha_inicio_prep: null,
+    fecha_listo: null,
+  }));
+
+  let insertadas;
   try {
-    for (const detail of detalles) {
-      await repository.insert('pedido_detalles', {
-        pedido_id: pedido.id,
-        platillo_id: detail.platillo_id,
-        cantidad: detail.cantidad,
-        precio_unitario: detail.precio_unitario,
-        notas: detail.notas,
-        estado_preparacion: 'pendiente',
-        fecha_inicio_prep: null,
-        fecha_listo: null,
-      });
-    }
+    insertadas = await repository.insertMany('pedido_detalles', filas);
   } catch (error) {
     // Compensación best-effort: el pedido ya existe pero sus líneas no.
     throw db.persistenceError(
@@ -147,7 +168,22 @@ async function createPedidoRecord(options) {
     );
   }
 
-  return { ...pedido, detalles };
+  // Se reutilizan las filas insertadas para la respuesta (evita releer
+  // pedido_detalles + platillos solo para armar el JSON).
+  const detallesFinales = filas.map((fila, index) => {
+    const insertada = insertadas[index];
+    if (!insertada) {
+      return { ...fila, subtotal: detalles[index].subtotal, platillo_nombre: detalles[index].platillo_nombre };
+    }
+    return {
+      ...insertada,
+      precio_unitario: Number(insertada.precio_unitario),
+      subtotal: Number(insertada.subtotal),
+      platillo_nombre: detalles[index].platillo_nombre,
+    };
+  });
+
+  return { ...pedido, detalles: detallesFinales };
 }
 
 async function detallesDePedido(pedidoId) {
@@ -155,7 +191,7 @@ async function detallesDePedido(pedidoId) {
     filters: { pedido_id: Number(pedidoId) },
     orderBy: 'id',
     ascending: true,
-    limit: 100,
+    limit: 1000,
   });
 
   if (detalles.length === 0) {
@@ -165,7 +201,7 @@ async function detallesDePedido(pedidoId) {
   const platilloIds = [...new Set(detalles.map((item) => item.platillo_id))];
   const { data: platillos } = await repository.list('platillos', {
     filters: { id: platilloIds },
-    limit: 100,
+    limit: platilloIds.length,
   });
   const nombres = new Map(platillos.map((platillo) => [platillo.id, platillo.nombre]));
 
@@ -177,12 +213,13 @@ async function detallesDePedido(pedidoId) {
   }));
 }
 
-async function pedidoConDetalles(pedido) {
+async function pedidoConDetalles(pedido, opciones = {}) {
+  const detallesPrevios = Array.isArray(opciones.detalles) ? opciones.detalles : null;
   const [mesa, cliente, repartidor, detalles] = await Promise.all([
     pedido.mesa_id ? repository.getById('mesas', pedido.mesa_id) : null,
     pedido.cliente_id ? repository.getById('clientes', pedido.cliente_id) : null,
     pedido.repartidor_id ? repository.getById('usuarios', pedido.repartidor_id) : null,
-    detallesDePedido(pedido.id),
+    detallesPrevios ? Promise.resolve(detallesPrevios) : detallesDePedido(pedido.id),
   ]);
 
   return {
@@ -207,9 +244,9 @@ async function fichaDePlatillo(platilloId) {
   return data[0] || null;
 }
 
-async function requerimientosDePedido(pedido) {
+async function requerimientosDePedido(pedido, detallesPrevios = null) {
   const requerimientos = new Map();
-  const detalles = await detallesDePedido(pedido.id);
+  const detalles = detallesPrevios || (await detallesDePedido(pedido.id));
   if (detalles.length === 0) {
     return requerimientos;
   }
@@ -217,7 +254,7 @@ async function requerimientosDePedido(pedido) {
   const platilloIds = [...new Set(detalles.map((item) => item.platillo_id))];
   const { data: fichas } = await repository.list('fichas_tecnicas', {
     filters: { platillo_id: platilloIds, activa: true },
-    limit: 100,
+    limit: 1000,
   });
   if (fichas.length === 0) {
     return requerimientos;
@@ -227,7 +264,7 @@ async function requerimientosDePedido(pedido) {
   const fichaIds = fichas.map((ficha) => ficha.id);
   const { data: ingredientes } = await repository.list('fichas_tecnicas_detalle', {
     filters: { ficha_id: fichaIds },
-    limit: 100,
+    limit: 1000,
   });
 
   for (const detail of detalles) {
@@ -251,12 +288,23 @@ async function requerimientosDePedido(pedido) {
   return requerimientos;
 }
 
-async function validarStockPedido(pedido) {
-  const requerimientos = await requerimientosDePedido(pedido);
+async function validarStockPedido(pedido, detallesPrevios = null) {
+  const requerimientos = await requerimientosDePedido(pedido, detallesPrevios);
+  const insumoIds = [...requerimientos.keys()];
+  if (insumoIds.length === 0) {
+    return requerimientos;
+  }
+
+  // Una sola consulta para todos los insumos (antes: 1 por insumo).
+  const { data: insumos } = await repository.list('insumos', {
+    filters: { id: insumoIds },
+    limit: insumoIds.length,
+  });
+  const insumosPorId = new Map(insumos.map((insumo) => [insumo.id, insumo]));
   const faltantes = [];
 
   for (const [insumoId, cantidad] of requerimientos.entries()) {
-    const insumo = await repository.getById('insumos', insumoId);
+    const insumo = insumosPorId.get(insumoId);
     if (!insumo) {
       continue;
     }
@@ -286,33 +334,40 @@ async function movimientosDePedido(pedidoId, tipo) {
     },
     orderBy: 'id',
     ascending: true,
-    limit: 100,
+    limit: 1000,
   });
   return data;
 }
 
-async function descontarStockPedido(pedido, usuarioId) {
+async function descontarStockPedido(pedido, usuarioId, detallesPrevios = null) {
   const salidas = await movimientosDePedido(pedido.id, 'salida');
   if (salidas.length > 0) {
     return [];
   }
 
-  const requerimientos = await validarStockPedido(pedido);
+  // No se lee el stock: el RPC valida y descuenta de forma atomica.
+  const requerimientos = await requerimientosDePedido(pedido, detallesPrevios);
   const movimientos = [];
   for (const [insumoId, cantidad] of requerimientos.entries()) {
-    movimientos.push(
-      await db.applyMovement({
-        insumo_id: insumoId,
-        tipo: 'salida',
-        cantidad: db.round3(cantidad),
-        referencia_tipo: 'pedido',
-        referencia_id: pedido.id,
-        usuario_id: usuarioId,
-        observacion: `Consumo del pedido ${pedido.numero}`,
-      }),
-    );
+    if (!(cantidad > 0)) {
+      continue;
+    }
+    movimientos.push({
+      insumo_id: insumoId,
+      tipo: 'salida',
+      cantidad: db.round3(cantidad),
+      referencia_tipo: 'pedido',
+      referencia_id: pedido.id,
+      usuario_id: usuarioId,
+      observacion: `Consumo del pedido ${pedido.numero}`,
+    });
   }
-  return movimientos;
+
+  if (movimientos.length === 0) {
+    return [];
+  }
+  // Una sola llamada (RPC atomico en Supabase; bucle en memoria).
+  return db.applyMovements(movimientos);
 }
 
 async function revertirStockPedido(pedido, usuarioId, motivo) {
@@ -324,29 +379,34 @@ async function revertirStockPedido(pedido, usuarioId, motivo) {
   const requerimientos = await requerimientosDePedido(pedido);
   const movimientos = [];
   for (const [insumoId, cantidad] of requerimientos.entries()) {
-    if (!insumosDescontados.has(insumoId)) {
+    if (!insumosDescontados.has(insumoId) || !(cantidad > 0)) {
       continue;
     }
-    movimientos.push(
-      await db.applyMovement({
-        insumo_id: insumoId,
-        tipo: 'devolucion',
-        cantidad: db.round3(cantidad),
-        referencia_tipo: 'pedido',
-        referencia_id: pedido.id,
-        usuario_id: usuarioId,
-        observacion: motivo || `Reversa del pedido ${pedido.numero}`,
-      }),
-    );
+    movimientos.push({
+      insumo_id: insumoId,
+      tipo: 'devolucion',
+      cantidad: db.round3(cantidad),
+      referencia_tipo: 'pedido',
+      referencia_id: pedido.id,
+      usuario_id: usuarioId,
+      observacion: motivo || `Reversa del pedido ${pedido.numero}`,
+    });
   }
-  return movimientos;
+
+  if (movimientos.length === 0) {
+    return [];
+  }
+  return db.applyMovements(movimientos);
 }
 
 async function enviarPedidoACocina(pedido, usuarioId) {
   if (pedido.estado !== 'borrador') {
     throw new AppError(409, 'CONFLICT', 'Solo un pedido en borrador puede enviarse a cocina.');
   }
-  const movimientos = await descontarStockPedido(pedido, usuarioId);
+
+  // Se leen los detalles una sola vez y se reutilizan para stock y respuesta.
+  const detalles = await detallesDePedido(pedido.id);
+  const movimientos = await descontarStockPedido(pedido, usuarioId, detalles);
   const ahora = db.nowIso();
 
   const actualizado = await repository.update('pedidos', pedido.id, {
@@ -354,14 +414,23 @@ async function enviarPedidoACocina(pedido, usuarioId) {
     fecha_inicio_prep: ahora,
   });
 
-  const detalles = await detallesDePedido(pedido.id);
-  for (const detail of detalles) {
-    await repository.update('pedido_detalles', detail.id, {
-      fecha_inicio_prep: ahora,
-    });
-  }
+  // Una sola sentencia para todas las lineas (antes: 1 UPDATE por linea).
+  await repository.updateWhere(
+    'pedido_detalles',
+    { pedido_id: pedido.id },
+    { fecha_inicio_prep: ahora },
+  );
 
-  return { pedido: actualizado || { ...pedido, estado: 'en_cocina', fecha_inicio_prep: ahora }, movimientos };
+  const detallesActualizados = detalles.map((detail) => ({
+    ...detail,
+    fecha_inicio_prep: ahora,
+  }));
+
+  return {
+    pedido: actualizado || { ...pedido, estado: 'en_cocina', fecha_inicio_prep: ahora },
+    movimientos,
+    detalles: detallesActualizados,
+  };
 }
 
 module.exports = {

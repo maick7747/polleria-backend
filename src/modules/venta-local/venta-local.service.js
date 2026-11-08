@@ -48,26 +48,203 @@ async function rondasDeCuenta(cuentaId) {
   return data;
 }
 
-async function resumenCuenta(cuenta) {
+function nombreUsuarioSync(usuarioId) {
+  if (!usuarioId) {
+    return null;
+  }
+  const usuario = store.find('usuarios', usuarioId);
+  return usuario ? usuario.nombre : null;
+}
+
+async function nombreUsuario(usuarioId) {
+  if (!usuarioId) {
+    return null;
+  }
+  const usuario = await repository.getById('usuarios', usuarioId, 'id,nombre');
+  return usuario ? usuario.nombre : null;
+}
+
+async function nombresDeUsuarios(ids) {
+  const unicos = [...new Set(ids.filter((id) => id != null))];
+  if (unicos.length === 0) {
+    return new Map();
+  }
+  const { data } = await repository.list('usuarios', {
+    select: 'id,nombre',
+    filters: { id: unicos },
+    limit: 100,
+  });
+  return new Map(data.map((usuario) => [usuario.id, usuario.nombre]));
+}
+
+function clienteResumen(cliente) {
+  if (!cliente) {
+    return null;
+  }
+  return {
+    id: cliente.id,
+    nombre: cliente.nombre,
+    tipo_documento: cliente.tipo_documento ?? null,
+    numero_documento: cliente.numero_documento ?? null,
+    telefono: cliente.telefono ?? null,
+    direccion: cliente.direccion ?? null,
+    referencia: cliente.referencia ?? null,
+  };
+}
+
+async function clienteDeCuenta(cuenta) {
+  if (!cuenta || !cuenta.cliente_id) {
+    return null;
+  }
+  if (!db.isSupabase()) {
+    return store.find('clientes', cuenta.cliente_id);
+  }
+  return repository.getById('clientes', cuenta.cliente_id);
+}
+
+// Resuelve (crea o actualiza) el cliente asociado a una cuenta. Si se pasa
+// `clienteIdActual`, actualiza ese registro (edición del cliente de la cuenta);
+// si no, busca por (tipo_documento, numero_documento) y actualiza si existe,
+// o crea uno nuevo. Un documento duplicado (código 23505) no es un error: se
+// reutiliza el cliente que ya existe.
+async function resolverCliente(clientePayload, clienteIdActual = null) {
+  if (clientePayload === undefined || clientePayload === null || clientePayload === '') {
+    return clienteIdActual;
+  }
+
+  const payload = requiredObject(clientePayload, 'cliente');
+  const nombre = requiredString(payload.nombre, 'nombre', { max: 120 });
+  const tipoDocumento = payload.tipo_documento
+    ? requiredEnum(payload.tipo_documento, 'tipo_documento', ['DNI', 'RUC'])
+    : null;
+  const numeroDocumento = payload.numero_documento
+    ? requiredString(payload.numero_documento, 'numero_documento', { max: 11 })
+    : null;
+
+  if (tipoDocumento && !numeroDocumento) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El número de documento es obligatorio.', [
+      { field: 'numero_documento' },
+    ]);
+  }
+
+  const datos = {
+    nombre,
+    tipo_documento: tipoDocumento,
+    numero_documento: numeroDocumento,
+    telefono: optionalString(payload.telefono, 'telefono', { max: 20 }),
+    direccion: optionalString(payload.direccion, 'direccion', { max: 200 }),
+    referencia: optionalString(payload.referencia, 'referencia', { max: 150 }),
+  };
+  const actualizadoEn = db.nowIso();
+
+  if (!db.isSupabase()) {
+    if (clienteIdActual) {
+      const actual = store.find('clientes', clienteIdActual);
+      if (actual) {
+        Object.assign(actual, datos, { actualizado_en: actualizadoEn });
+        return actual.id;
+      }
+    }
+    if (tipoDocumento && numeroDocumento) {
+      const existente = store.state.clientes.find(
+        (item) =>
+          item.tipo_documento === tipoDocumento &&
+          item.numero_documento === numeroDocumento,
+      );
+      if (existente) {
+        Object.assign(existente, datos, { actualizado_en: actualizadoEn });
+        return existente.id;
+      }
+    }
+    const record = {
+      id: store.nextId('clientes'),
+      ...datos,
+      creado_en: actualizadoEn,
+      actualizado_en: actualizadoEn,
+    };
+    store.state.clientes.push(record);
+    return record.id;
+  }
+
+  if (clienteIdActual) {
+    try {
+      const actual = await repository.update('clientes', clienteIdActual, {
+        ...datos,
+        actualizado_en: actualizadoEn,
+      });
+      if (actual) {
+        return actual.id;
+      }
+    } catch (error) {
+      // Documento duplicado: se resuelve por documento más abajo.
+      if (String(error.code) !== '23505') {
+        throw db.persistenceError('No se pudo actualizar el cliente de la cuenta.', error);
+      }
+    }
+  }
+
+  if (tipoDocumento && numeroDocumento) {
+    const existente = await db.findOne('clientes', {
+      tipo_documento: tipoDocumento,
+      numero_documento: numeroDocumento,
+    });
+    if (existente) {
+      if (existente.id !== clienteIdActual) {
+        await repository.update('clientes', existente.id, {
+          ...datos,
+          actualizado_en: actualizadoEn,
+        });
+      }
+      return existente.id;
+    }
+  }
+
+  try {
+    const creado = await repository.insert('clientes', datos);
+    return creado.id;
+  } catch (error) {
+    if (String(error.code) === '23505' && tipoDocumento && numeroDocumento) {
+      const existente = await db.findOne('clientes', {
+        tipo_documento: tipoDocumento,
+        numero_documento: numeroDocumento,
+      });
+      if (existente) {
+        return existente.id;
+      }
+    }
+    throw db.persistenceError('No se pudo registrar el cliente de la cuenta.', error);
+  }
+}
+
+async function resumenCuenta(cuenta, nombres = null) {
   if (!db.isSupabase()) {
     const mesa = store.find('mesas', cuenta.mesa_id);
     const rondas = store.state.pedidos.filter((pedido) => pedido.cuenta_id === cuenta.id);
+    const cliente = cuenta.cliente_id ? store.find('clientes', cuenta.cliente_id) : null;
     return {
       ...cuenta,
+      usuario_apertura_nombre: nombreUsuarioSync(cuenta.usuario_apertura_id),
       mesa_numero: mesa ? mesa.numero : null,
+      cliente: clienteResumen(cliente),
       rondas: rondas.length,
       pedidos: rondas.map((pedido) => pedido.id),
     };
   }
 
-  const [mesa, rondas] = await Promise.all([
+  const [mesa, rondas, usuarioApertura, cliente] = await Promise.all([
     repository.getById('mesas', cuenta.mesa_id),
     rondasDeCuenta(cuenta.id),
+    nombres
+      ? nombres.get(cuenta.usuario_apertura_id) ?? null
+      : nombreUsuario(cuenta.usuario_apertura_id),
+    clienteDeCuenta(cuenta),
   ]);
   return {
     ...cuenta,
     total: Number(cuenta.total),
+    usuario_apertura_nombre: usuarioApertura,
     mesa_numero: mesa ? mesa.numero : null,
+    cliente: clienteResumen(cliente),
     rondas: rondas.length,
     pedidos: rondas.map((pedido) => pedido.id),
   };
@@ -78,12 +255,19 @@ async function cuentaAbiertaDetalle(mesaId) {
   if (!cuenta) {
     return null;
   }
-  const rondas = await rondasDeCuenta(cuenta.id);
+  const [rondas, cliente] = await Promise.all([
+    rondasDeCuenta(cuenta.id),
+    clienteDeCuenta(cuenta),
+  ]);
   const detalle = await Promise.all(rondas.map((pedido) => pedidosDb.pedidoConDetalles(pedido)));
   return {
     ...cuenta,
     total: Number(cuenta.total),
+    usuario_apertura_nombre: db.isSupabase()
+      ? await nombreUsuario(cuenta.usuario_apertura_id)
+      : nombreUsuarioSync(cuenta.usuario_apertura_id),
     mesa_numero: null,
+    cliente: clienteResumen(cliente),
     rondas: rondas.length,
     pedidos: detalle,
   };
@@ -104,7 +288,15 @@ async function listMesas(query = {}) {
         return {
           ...mesa,
           estado: cuenta ? 'ocupada' : mesa.estado,
-          cuenta_abierta: cuenta ? { id: cuenta.id, total: cuenta.total, fecha_apertura: cuenta.fecha_apertura } : null,
+          cuenta_abierta: cuenta
+            ? {
+                id: cuenta.id,
+                total: cuenta.total,
+                fecha_apertura: cuenta.fecha_apertura,
+                usuario_apertura_id: cuenta.usuario_apertura_id,
+                usuario_apertura_nombre: nombreUsuarioSync(cuenta.usuario_apertura_id),
+              }
+            : null,
         };
       })
       .filter((mesa) => !estado || mesa.estado === estado);
@@ -128,6 +320,7 @@ async function listMesas(query = {}) {
   ]);
 
   const abiertas = new Map(cuentas.map((cuenta) => [cuenta.mesa_id, cuenta]));
+  const nombres = await nombresDeUsuarios(cuentas.map((cuenta) => cuenta.usuario_apertura_id));
   const data = mesas
     .map((mesa) => {
       const cuenta = abiertas.get(mesa.id);
@@ -139,6 +332,8 @@ async function listMesas(query = {}) {
               id: cuenta.id,
               total: Number(cuenta.total),
               fecha_apertura: cuenta.fecha_apertura,
+              usuario_apertura_id: cuenta.usuario_apertura_id,
+              usuario_apertura_nombre: nombres.get(cuenta.usuario_apertura_id) ?? null,
             }
           : null,
       };
@@ -200,16 +395,22 @@ async function listCuentas(query = {}) {
     ascending: false,
     limit: 100,
   });
-  const mapped = await Promise.all(data.map((cuenta) => resumenCuenta(cuenta)));
+  const nombres = await nombresDeUsuarios(data.map((cuenta) => cuenta.usuario_apertura_id));
+  const mapped = await Promise.all(
+    data.map((cuenta) => resumenCuenta(cuenta, nombres)),
+  );
   return paginate(mapped, query);
 }
 
 function resumenCuentaSync(cuenta) {
   const mesa = store.find('mesas', cuenta.mesa_id);
   const rondas = store.state.pedidos.filter((pedido) => pedido.cuenta_id === cuenta.id);
+  const cliente = cuenta.cliente_id ? store.find('clientes', cuenta.cliente_id) : null;
   return {
     ...cuenta,
+    usuario_apertura_nombre: nombreUsuarioSync(cuenta.usuario_apertura_id),
     mesa_numero: mesa ? mesa.numero : null,
+    cliente: clienteResumen(cliente),
     rondas: rondas.length,
     pedidos: rondas.map((pedido) => pedido.id),
   };
@@ -237,6 +438,8 @@ async function createCuenta(body, usuario) {
     }
     store.requireCajaAbierta();
 
+    const clienteId = await resolverCliente(payload.cliente);
+
     const cuenta = {
       id: store.nextId('cuentas'),
       mesa_id: mesaId,
@@ -244,6 +447,7 @@ async function createCuenta(body, usuario) {
       total: 0,
       fecha_apertura: store.nowIso(),
       usuario_apertura_id: usuario.id,
+      cliente_id: clienteId,
       fecha_cierre: null,
       usuario_cierre_id: null,
       comprobante_tipo: 'boleta',
@@ -263,6 +467,8 @@ async function createCuenta(body, usuario) {
   }
   await db.requireCajaAbierta();
 
+  const clienteId = await resolverCliente(payload.cliente);
+
   let cuenta;
   try {
     cuenta = await repository.insert('cuentas', {
@@ -271,6 +477,7 @@ async function createCuenta(body, usuario) {
       total: 0,
       fecha_apertura: db.nowIso(),
       usuario_apertura_id: usuario.id,
+      cliente_id: clienteId,
       comprobante_tipo: 'boleta',
     });
   } catch (error) {
@@ -297,12 +504,94 @@ async function createCuenta(body, usuario) {
   return resumenCuenta(cuenta);
 }
 
-async function addRonda(cuentaId, body, usuario) {
+async function attachCliente(cuentaId, body) {
   const id = parseId(cuentaId);
   const payload = requiredObject(body);
 
+  if (payload.cliente === undefined) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El cliente es obligatorio.', [
+      { field: 'cliente' },
+    ]);
+  }
+
   if (!db.isSupabase()) {
     const cuenta = store.findOrThrow('cuentas', id, 'Cuenta');
+    if (cuenta.estado !== 'abierta') {
+      throw new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
+    }
+
+    const clienteId = await resolverCliente(payload.cliente, cuenta.cliente_id);
+    cuenta.cliente_id = clienteId;
+    return resumenCuentaSync(cuenta);
+  }
+
+  const cuenta = await db.findOrThrow('cuentas', id, 'Cuenta');
+  if (cuenta.estado !== 'abierta') {
+    throw new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
+  }
+
+  const clienteId = await resolverCliente(payload.cliente, cuenta.cliente_id);
+
+  let actualizada;
+  try {
+    actualizada = await repository.update('cuentas', cuenta.id, { cliente_id: clienteId });
+  } catch (error) {
+    throw db.persistenceError('No se pudo asociar el cliente a la cuenta.', error);
+  }
+
+  return resumenCuenta(actualizada || { ...cuenta, cliente_id: clienteId });
+}
+
+// Ajusta cuentas.total en una sola operacion atomica cuando la RPC existe
+// (migracion 006): evita lost updates por read-modify-write. Si la funcion no
+// esta aplicada, se conserva el comportamiento anterior.
+async function ajustarTotalCuenta(cuenta, delta, mensajeError) {
+  if (db.isSupabase()) {
+    try {
+      return await repository.rpc('fn_sumar_total_cuenta', {
+        p_cuenta_id: Number(cuenta.id),
+        p_delta: db.round2(delta),
+      });
+    } catch (error) {
+      if (!repository.esFuncionInexistente(error)) {
+        throw db.persistenceError(mensajeError, error);
+      }
+    }
+  }
+
+  const total = db.round2(Math.max(0, Number(cuenta.total) + Number(delta)));
+  if (!db.isSupabase()) {
+    cuenta.total = total;
+    return total;
+  }
+  const actualizada = await repository.update('cuentas', cuenta.id, { total });
+  return actualizada ? Number(actualizada.total) : total;
+}
+
+function parseIdempotencyKey(value) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  return requiredString(value, 'idempotency_key', { max: 64 });
+}
+
+async function addRonda(cuentaId, body, usuario) {
+  const id = parseId(cuentaId);
+  const payload = requiredObject(body);
+  const idempotencyKey = parseIdempotencyKey(payload.idempotency_key);
+
+  if (!db.isSupabase()) {
+    const cuenta = store.findOrThrow('cuentas', id, 'Cuenta');
+
+    if (idempotencyKey) {
+      const previo = store.state.pedidos.find(
+        (pedido) => pedido.idempotency_key === idempotencyKey,
+      );
+      if (previo) {
+        return { ...pedidos.pedidoConDetalles(previo), idempotente: true };
+      }
+    }
+
     if (cuenta.estado !== 'abierta') {
       throw new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
     }
@@ -316,6 +605,7 @@ async function addRonda(cuentaId, body, usuario) {
       usuario_id: usuario.id,
       items: payload.items,
       observaciones: payload.observaciones,
+      idempotency_key: idempotencyKey,
     });
 
     cuenta.total = store.round2(cuenta.total + pedido.total);
@@ -323,33 +613,54 @@ async function addRonda(cuentaId, body, usuario) {
   }
 
   const cuenta = await db.findOrThrow('cuentas', id, 'Cuenta');
+
+  if (idempotencyKey) {
+    const previo = await db.findOne('pedidos', { idempotency_key: idempotencyKey });
+    if (previo) {
+      return { ...(await pedidosDb.pedidoConDetalles(previo)), idempotente: true };
+    }
+  }
+
   if (cuenta.estado !== 'abierta') {
     throw new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
   }
   await db.requireCajaAbierta();
 
-  const pedido = await pedidosDb.createPedidoRecord({
-    canal: 'local',
-    tipo_consumo: 'sala',
-    mesa_id: cuenta.mesa_id,
-    cuenta_id: cuenta.id,
-    usuario_id: usuario.id,
-    items: payload.items,
-    observaciones: payload.observaciones,
-  });
-
+  let pedido;
   try {
-    await repository.update('cuentas', cuenta.id, {
-      total: db.round2(Number(cuenta.total) + Number(pedido.total)),
+    pedido = await pedidosDb.createPedidoRecord({
+      canal: 'local',
+      tipo_consumo: 'sala',
+      mesa_id: cuenta.mesa_id,
+      cuenta_id: cuenta.id,
+      usuario_id: usuario.id,
+      items: payload.items,
+      observaciones: payload.observaciones,
+      idempotency_key: idempotencyKey,
     });
   } catch (error) {
-    throw db.persistenceError(
-      `La ronda ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
-      error,
-    );
+    // Protección de carrera: otra petición con la misma clave pudo ganar
+    // entre la búsqueda previa y el insert. Si el pedido ya existe, se
+    // devuelve ese en lugar de propagar el fallo de unicidad.
+    if (idempotencyKey) {
+      const previo = await db
+        .findOne('pedidos', { idempotency_key: idempotencyKey })
+        .catch(() => null);
+      if (previo) {
+        return { ...(await pedidosDb.pedidoConDetalles(previo)), idempotente: true };
+      }
+    }
+    throw error;
   }
 
-  return pedidosDb.pedidoConDetalles(pedido);
+  await ajustarTotalCuenta(
+    cuenta,
+    pedido.total,
+    `La ronda ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
+  );
+
+  // Los detalles ya vienen del insert (evita 2 SELECT extra en la respuesta).
+  return pedidosDb.pedidoConDetalles(pedido, { detalles: pedido.detalles });
 }
 
 async function listPedidos(query = {}) {
@@ -479,19 +790,14 @@ async function createPedido(body, usuario) {
 
   if (pedido.cuenta_id) {
     const cuenta = await db.findOrThrow('cuentas', pedido.cuenta_id, 'Cuenta');
-    try {
-      await repository.update('cuentas', cuenta.id, {
-        total: db.round2(Number(cuenta.total) + Number(pedido.total)),
-      });
-    } catch (error) {
-      throw db.persistenceError(
-        `El pedido ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
-        error,
-      );
-    }
+    await ajustarTotalCuenta(
+      cuenta,
+      pedido.total,
+      `El pedido ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
+    );
   }
 
-  return pedidosDb.pedidoConDetalles(pedido);
+  return pedidosDb.pedidoConDetalles(pedido, { detalles: pedido.detalles });
 }
 
 async function updatePedido(id, body) {
@@ -639,7 +945,7 @@ async function enviarCocina(id, usuario) {
 
   const pedido = await db.findOrThrow('pedidos', parseId(id), 'Pedido');
   const result = await pedidosDb.enviarPedidoACocina(pedido, usuario.id);
-  const detalle = await pedidosDb.pedidoConDetalles(result.pedido);
+  const detalle = await pedidosDb.pedidoConDetalles(result.pedido, { detalles: result.detalles });
   return {
     ...detalle,
     movimientos_inventario: result.movimientos.length,
@@ -698,9 +1004,11 @@ async function cancelarPedido(id, body, usuario) {
   if (pedido.cuenta_id) {
     const cuenta = await repository.getById('cuentas', pedido.cuenta_id);
     if (cuenta && cuenta.estado === 'abierta') {
-      await repository.update('cuentas', cuenta.id, {
-        total: db.round2(Math.max(0, Number(cuenta.total) - Number(pedido.total))),
-      });
+      await ajustarTotalCuenta(
+        cuenta,
+        -Number(pedido.total),
+        `El pedido ${pedido.numero} se canceló pero no se pudo actualizar el total de la cuenta.`,
+      );
     }
   }
 
@@ -827,6 +1135,7 @@ module.exports = {
   listCuentas,
   getCuentaBasica,
   createCuenta,
+  attachCliente,
   addRonda,
   listPedidos,
   getPedido,

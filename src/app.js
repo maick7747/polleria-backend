@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 
 const env = require('./config/env');
 const authMiddleware = require('./middleware/auth');
@@ -31,6 +32,8 @@ const integracionesRoutes = require('./modules/integraciones/integraciones.route
 const app = express();
 
 app.disable('x-powered-by');
+
+app.use(compression());
 
 app.use(
   cors({

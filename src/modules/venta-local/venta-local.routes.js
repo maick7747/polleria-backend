@@ -3,9 +3,15 @@
 const express = require('express');
 const { requirePermiso } = require('../../middleware/roles');
 const service = require('./venta-local.service');
+const tablero = require('./tablero.service');
 
 const router = express.Router();
 const permisoVenta = requirePermiso('venta.registrar');
+const permisoTablero = requirePermiso('venta.registrar', 'caja.cobrar', 'cocina.kds');
+
+router.get('/tablero', permisoTablero, async (req, res) => {
+  res.json(await tablero.obtenerTablero());
+});
 
 router.get('/mesas', permisoVenta, async (req, res) => {
   res.json(await service.listMesas(req.query));
@@ -25,6 +31,10 @@ router.post('/cuentas', permisoVenta, async (req, res) => {
 
 router.post('/cuentas/:id/pedidos', permisoVenta, async (req, res) => {
   res.status(201).json(await service.addRonda(req.params.id, req.body, req.usuario));
+});
+
+router.patch('/cuentas/:id/cliente', permisoVenta, async (req, res) => {
+  res.json(await service.attachCliente(req.params.id, req.body));
 });
 
 router.get('/pedidos', permisoVenta, async (req, res) => {

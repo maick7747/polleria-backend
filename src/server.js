@@ -10,6 +10,9 @@ const server = app.listen(env.port, () => {
   console.log(`Supabase: ${supabase ? 'configurado' : 'no configurado (store en memoria)'}`);
 });
 
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
 function shutdown(signal) {
   console.log(`\nSeñal ${signal} recibida. Cerrando servidor...`);
   const forceExit = setTimeout(() => {

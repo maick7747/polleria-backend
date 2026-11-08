@@ -20,6 +20,27 @@ const TABLES = new Set([
 
 let cachedClient = null;
 
+const FETCH_TIMEOUT_MS = 15000;
+
+// Envuelve fetch con un timeout de red (Supabase free + Render cold start).
+// Si el runtime soporta AbortSignal.timeout se usa; si no, AbortController.
+function fetchConTimeout(input, init) {
+  const options = { ...(init || {}) };
+  if (!options.signal) {
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      options.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    } else {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') {
+        timer.unref();
+      }
+      options.signal = controller.signal;
+    }
+  }
+  return fetch(input, options);
+}
+
 function mode() {
   return String(process.env.DB_MODE || env.dbMode || 'memory').toLowerCase();
 }
@@ -46,6 +67,7 @@ function getClient() {
     const { createClient } = require('@supabase/supabase-js');
     cachedClient = createClient(url, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: fetchConTimeout },
     });
     return cachedClient;
   }
@@ -69,7 +91,7 @@ function clampLimit(value) {
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return 20;
   }
-  return Math.min(Math.floor(parsed), 100);
+  return Math.min(Math.floor(parsed), 1000);
 }
 
 function normalizePage(value) {
@@ -83,6 +105,20 @@ function supabaseError(error) {
   wrapped.details = error.details;
   wrapped.hint = error.hint;
   return wrapped;
+}
+
+// Detecta que la funcion RPC no existe en la base (p. ej. migracion 006 sin
+// aplicar). Permite caer al camino lento sin romper la operacion.
+function esFuncionInexistente(error) {
+  if (!error) {
+    return false;
+  }
+  const code = error.code === undefined || error.code === null ? '' : String(error.code);
+  if (code === 'PGRST202' || code === '42883') {
+    return true;
+  }
+  const message = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`;
+  return /Could not find the function/i.test(message) || /does not exist/i.test(message);
 }
 
 // ---------------------------------------------------------------------
@@ -280,6 +316,61 @@ async function insert(table, row) {
   return data;
 }
 
+async function insertMany(table, rows) {
+  assertTable(table);
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [];
+  }
+
+  if (mode() === 'memory') {
+    return rows.map((row) => {
+      const record = { id: store.nextId(table), ...row };
+      memoryRows(table).push(record);
+      return clone(record);
+    });
+  }
+
+  const { data, error } = await getClient().from(table).insert(rows).select();
+  if (error) {
+    throw supabaseError(error);
+  }
+  return data || [];
+}
+
+async function updateWhere(table, filters, patch) {
+  assertTable(table);
+
+  const hayFiltros = filters && Object.keys(filters).length > 0;
+  if (!hayFiltros) {
+    throw new Error('updateWhere requiere al menos un filtro.');
+  }
+
+  if (mode() === 'memory') {
+    const rows = memoryRows(table).filter((row) => matchesFilters(row, filters));
+    rows.forEach((row) => Object.assign(row, patch));
+    return rows.map(clone);
+  }
+
+  let query = getClient().from(table).update(patch);
+  for (const [clave, valor] of Object.entries(filters)) {
+    if (Array.isArray(valor)) {
+      query = query.in(clave, valor);
+    } else if (valor === null) {
+      query = query.is(clave, null);
+    } else {
+      query = query.eq(clave, valor);
+    }
+  }
+
+  const { data, error } = await query.select();
+
+  if (error) {
+    throw supabaseError(error);
+  }
+  return data || [];
+}
+
 async function update(table, id, patch) {
   assertTable(table);
 
@@ -388,9 +479,12 @@ module.exports = {
   list,
   getById,
   insert,
+  insertMany,
   update,
+  updateWhere,
   remove,
   rpc,
+  esFuncionInexistente,
   table,
   health,
 };

@@ -1,6 +1,8 @@
 'use strict';
 
 const store = require('../../data/store');
+const repository = require('../../data/repository');
+const db = require('../../data/db');
 const { AppError } = require('../../middleware/error');
 const {
   requiredObject,
@@ -70,7 +72,7 @@ function listCategorias() {
   return { data, meta: { total: data.length } };
 }
 
-function listPlatillos(query = {}) {
+function filtrosPlatillos(query = {}) {
   const categoriaId = query.categoria_id ? parseId(query.categoria_id, 'categoria_id') : null;
   const q = query.q ? String(query.q).trim().toLowerCase() : '';
   let activo = null;
@@ -82,13 +84,87 @@ function listPlatillos(query = {}) {
     }
     activo = String(query.activo) === 'true' || String(query.activo) === '1';
   }
+  return { categoriaId, q, activo };
+}
 
-  const data = store.state.platillos
+function aplicarFiltrosPlatillos(platillos, { categoriaId, q, activo }) {
+  return platillos
     .filter((platillo) => !categoriaId || platillo.categoria_id === categoriaId)
     .filter((platillo) => activo === null || platillo.activo === activo)
-    .filter((platillo) => !q || platillo.nombre.toLowerCase().includes(q))
-    .sort((a, b) => a.nombre.localeCompare(b.nombre))
-    .map((platillo) => fichaConDetalle(platillo.id));
+    .filter((platillo) => !q || String(platillo.nombre || '').toLowerCase().includes(q))
+    .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+}
+
+async function listPlatillosDesdeDb(query, filtros) {
+  const [
+    { data: platillos },
+    { data: categorias },
+    { data: fichas },
+    { data: detalles },
+    { data: insumos },
+  ] = await Promise.all([
+    repository.list('platillos', { orderBy: 'nombre', ascending: true, limit: 500 }),
+    repository.list('categorias_platillo', { limit: 100 }),
+    repository.list('fichas_tecnicas', { limit: 500 }),
+    repository.list('fichas_tecnicas_detalle', { limit: 2000 }),
+    repository.list('insumos', { limit: 500 }),
+  ]);
+
+  const categoriasPorId = new Map(categorias.map((categoria) => [categoria.id, categoria.nombre]));
+  const insumosPorId = new Map(insumos.map((insumo) => [insumo.id, insumo]));
+  const fichasPorPlatillo = new Map(fichas.map((ficha) => [ficha.platillo_id, ficha]));
+  const detallesPorFicha = new Map();
+  for (const detalle of detalles) {
+    const lista = detallesPorFicha.get(detalle.ficha_id) || [];
+    lista.push(detalle);
+    detallesPorFicha.set(detalle.ficha_id, lista);
+  }
+
+  const normalizados = platillos.map((platillo) => {
+    const ficha = fichasPorPlatillo.get(platillo.id) || null;
+    const ingredientes = (ficha ? detallesPorFicha.get(ficha.id) || [] : []).map((detalle) => {
+      const insumo = insumosPorId.get(detalle.insumo_id) || null;
+      const costoPromedio = insumo ? Number(insumo.costo_promedio) : 0;
+      const cantidad = Number(detalle.cantidad);
+      return {
+        ...detalle,
+        cantidad,
+        insumo: insumo ? insumo.nombre : null,
+        unidad_medida: insumo ? insumo.unidad_medida : null,
+        costo_promedio: costoPromedio,
+        costo_linea: db.round2(cantidad * costoPromedio),
+      };
+    });
+    const porciones = ficha ? Number(ficha.porciones_rendimiento) || 1 : 1;
+    const costoPorcion = ficha ? db.round2(Number(ficha.costo_total) / porciones) : 0;
+    const precio = Number(platillo.precio_venta);
+    return {
+      ...platillo,
+      precio_venta: precio,
+      categoria: categoriasPorId.get(platillo.categoria_id) ?? null,
+      ficha,
+      ingredientes,
+      costo_porcion: costoPorcion,
+      food_cost_pct: precio > 0 ? db.round2((costoPorcion / precio) * 100) : 0,
+    };
+  });
+
+  return paginate(aplicarFiltrosPlatillos(normalizados, filtros), {
+    ...query,
+    limit: query.limit || 50,
+  });
+}
+
+async function listPlatillos(query = {}) {
+  const filtros = filtrosPlatillos(query);
+
+  if (db.isSupabase()) {
+    return listPlatillosDesdeDb(query, filtros);
+  }
+
+  const data = aplicarFiltrosPlatillos(store.state.platillos, filtros).map((platillo) =>
+    fichaConDetalle(platillo.id),
+  );
 
   return paginate(data, query);
 }

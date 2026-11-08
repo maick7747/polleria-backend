@@ -17,6 +17,29 @@ const sunat = require('../../lib/sunat');
 
 const METODOS = ['efectivo', 'tarjeta', 'yape', 'plin', 'transferencia'];
 
+function nombreUsuarioSync(usuarioId) {
+  if (!usuarioId) {
+    return null;
+  }
+  const usuario = store.find('usuarios', usuarioId);
+  return usuario ? usuario.nombre : null;
+}
+
+function clienteResumen(cliente) {
+  if (!cliente) {
+    return null;
+  }
+  return {
+    id: cliente.id,
+    nombre: cliente.nombre,
+    tipo_documento: cliente.tipo_documento ?? null,
+    numero_documento: cliente.numero_documento ?? null,
+    telefono: cliente.telefono ?? null,
+    direccion: cliente.direccion ?? null,
+    referencia: cliente.referencia ?? null,
+  };
+}
+
 async function rondasDeCuenta(cuentaId) {
   if (!db.isSupabase()) {
     return store.state.pedidos
@@ -46,10 +69,13 @@ async function cuentaDetalle(id) {
     const igv = store.round2(rondas.reduce((sum, pedido) => sum + pedido.igv, 0));
     const total = store.round2(rondas.reduce((sum, pedido) => sum + pedido.total, 0));
     const pagos = store.state.pagos.filter((pago) => pago.cuenta_id === cuenta.id);
+    const cliente = cuenta.cliente_id ? store.find('clientes', cuenta.cliente_id) : null;
 
     return {
       ...cuenta,
+      usuario_apertura_nombre: nombreUsuarioSync(cuenta.usuario_apertura_id),
       mesa_numero: mesa ? mesa.numero : null,
+      cliente: clienteResumen(cliente),
       subtotal,
       igv,
       total_consolidado: total,
@@ -69,7 +95,7 @@ async function cuentaDetalle(id) {
   }
 
   const cuenta = await db.findOrThrow('cuentas', parseId(id), 'Cuenta');
-  const [mesa, rondas, pagosResult] = await Promise.all([
+  const [mesa, rondas, pagosResult, usuarioApertura, cliente] = await Promise.all([
     repository.getById('mesas', cuenta.mesa_id),
     rondasDeCuenta(cuenta.id),
     repository.list('pagos', {
@@ -78,6 +104,8 @@ async function cuentaDetalle(id) {
       ascending: true,
       limit: 100,
     }),
+    repository.getById('usuarios', cuenta.usuario_apertura_id, 'id,nombre'),
+    cuenta.cliente_id ? repository.getById('clientes', cuenta.cliente_id) : null,
   ]);
 
   const subtotal = store.round2(
@@ -93,7 +121,9 @@ async function cuentaDetalle(id) {
   return {
     ...cuenta,
     total: Number(cuenta.total),
+    usuario_apertura_nombre: usuarioApertura ? usuarioApertura.nombre : null,
     mesa_numero: mesa ? mesa.numero : null,
+    cliente: clienteResumen(cliente),
     subtotal,
     igv,
     total_consolidado: total,

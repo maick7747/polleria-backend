@@ -62,6 +62,7 @@ function createPedidoRecord(options) {
     referencia_entrega = null,
     costo_delivery = 0,
     comision_plataforma = 0,
+    idempotency_key = null,
     fecha_pedido = store.nowIso(),
   } = options;
 
@@ -100,6 +101,7 @@ function createPedidoRecord(options) {
     direccion_entrega,
     referencia_entrega,
     observaciones: observaciones ? requiredString(observaciones, 'observaciones', { max: 300 }) : null,
+    idempotency_key: idempotency_key || null,
     comprobante_tipo: tipo_consumo === 'sala' ? 'boleta' : 'ticket',
     comprobante_numero: null,
     fecha_inicio_prep: null,

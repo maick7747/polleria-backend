@@ -23,6 +23,7 @@
   "type": "commonjs",
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
+    "compression": "^1.8.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "pg": "^8.23.1"

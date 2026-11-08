@@ -11,8 +11,8 @@ router.get('/categorias-platillo', permiso, (req, res) => {
   res.json(service.listCategorias());
 });
 
-router.get('/platillos', permiso, (req, res) => {
-  res.json(service.listPlatillos(req.query));
+router.get('/platillos', permiso, async (req, res) => {
+  res.json(await service.listPlatillos(req.query));
 });
 
 router.get('/platillos/:id', permiso, (req, res) => {

@@ -52,18 +52,51 @@ const CONFIG_ALIASES = {
   sla_kds_min: 'kds_sla_min',
 };
 
+// Cache en memoria de la configuracion leida de Supabase. calcTotals pide
+// igv_pct + igv_min_soles en cada pedido y el KDS pide kds_sla_min; sin cache
+// son 2-3 SELECT extra por request. Solo se invalida por TTL (60 s), que es
+// suficiente porque la configuracion cambia rara vez.
+const CONFIG_CACHE_TTL_MS = 60000;
+const configCache = new Map();
+
+function leerConfigCache(clave) {
+  const entry = configCache.get(clave);
+  if (!entry) {
+    return { hit: false };
+  }
+  if (entry.expira <= Date.now()) {
+    configCache.delete(clave);
+    return { hit: false };
+  }
+  return { hit: true, valor: entry.valor };
+}
+
+function guardarConfigCache(clave, valor) {
+  configCache.set(clave, { valor, expira: Date.now() + CONFIG_CACHE_TTL_MS });
+}
+
 async function getConfig(clave) {
   if (!isSupabase()) {
     return store.getConfig(clave);
   }
+
+  const cached = leerConfigCache(clave);
+  if (cached.hit) {
+    return cached.valor;
+  }
+
   const keys = [clave, CONFIG_ALIASES[clave]].filter(Boolean);
   for (const key of keys) {
     const row = await findOne('configuracion', { clave: key });
     if (row) {
       const numeric = Number(row.valor);
-      return Number.isFinite(numeric) ? numeric : row.valor;
+      const valor = Number.isFinite(numeric) ? numeric : row.valor;
+      guardarConfigCache(clave, valor);
+      return valor;
     }
   }
+
+  guardarConfigCache(clave, undefined);
   return undefined;
 }
 
@@ -210,6 +243,75 @@ async function applyMovement({
   });
 }
 
+// Aplica varios movimientos de inventario en una sola operacion.
+// - Supabase: RPC fn_aplicar_movimientos_stock (atomico, valida stock con
+//   FOR UPDATE). Si la funcion aun no existe, cae al bucle applyMovement
+//   (mismo comportamiento anterior, sin transaccion).
+// - Memoria: bucle store.applyMovement.
+async function applyMovements(movs) {
+  const lista = Array.isArray(movs) ? movs.filter(Boolean) : [];
+
+  const normalizados = lista.map((mov) => {
+    const quantity = store.round3(mov.cantidad);
+    if (!(quantity > 0)) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'La cantidad del movimiento debe ser mayor a cero.');
+    }
+    return {
+      insumo_id: mov.insumo_id,
+      tipo: mov.tipo,
+      cantidad: quantity,
+      referencia_tipo: mov.referencia_tipo ?? null,
+      referencia_id: mov.referencia_id ?? null,
+      usuario_id: mov.usuario_id,
+      observacion: mov.observacion ?? null,
+      stock_resultante: mov.stock_resultante ?? null,
+    };
+  });
+
+  if (normalizados.length === 0) {
+    return [];
+  }
+
+  // Orden estable por insumo_id: el RPC bloquea filas con FOR UPDATE en el
+  // orden recibido; un orden global evita deadlocks entre pedidos concurrentes.
+  normalizados.sort((a, b) => Number(a.insumo_id) - Number(b.insumo_id));
+
+  if (!isSupabase()) {
+    return normalizados.map((mov) => store.applyMovement(mov));
+  }
+
+  try {
+    const data = await repository.rpc('fn_aplicar_movimientos_stock', {
+      p_movimientos: normalizados,
+    });
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    if (repository.esFuncionInexistente(error)) {
+      const movimientos = [];
+      for (const mov of normalizados) {
+        movimientos.push(await applyMovement(mov));
+      }
+      return movimientos;
+    }
+
+    const mensaje = String(error && error.message ? error.message : '');
+    const stockInsuficiente = mensaje.match(/STOCK_INSUFICIENTE:\s*(.+)$/i);
+    if (stockInsuficiente) {
+      const nombre = stockInsuficiente[1].trim();
+      throw new AppError(409, 'STOCK_INSUFICIENTE', `No hay stock suficiente de ${nombre}.`, [
+        { insumo: nombre },
+      ]);
+    }
+
+    const insumoFaltante = mensaje.match(/INSUMO_NO_ENCONTRADO:\s*(.+)$/i);
+    if (insumoFaltante) {
+      throw new AppError(404, 'NOT_FOUND', `Insumo con id ${insumoFaltante[1].trim()} no existe.`);
+    }
+
+    throw persistenceError('No se pudieron aplicar los movimientos de inventario.', error);
+  }
+}
+
 module.exports = {
   dbMode,
   isSupabase,
@@ -223,6 +325,7 @@ module.exports = {
   nextPedidoNumero,
   nextComprobanteNumero,
   applyMovement,
+  applyMovements,
   round2: store.round2,
   round3: store.round3,
   nowIso: store.nowIso,
