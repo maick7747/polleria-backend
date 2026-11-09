@@ -79,6 +79,13 @@ function activoDTO(activo, mantenimientos = []) {
   const vida = activo.vida_util_meses === null || activo.vida_util_meses === undefined
     ? null
     : Number(activo.vida_util_meses);
+  // Próximo mantenimiento: la fecha programada más cercana entre los que
+  // siguen pendientes (estado "programado"). Null si no hay ninguno.
+  const programados = mantenimientos
+    .filter((item) => item && item.estado === 'programado' && item.programada_para)
+    .map((item) => String(item.programada_para))
+    .sort();
+  const proximoMantenimiento = programados.length > 0 ? programados[0] : null;
   return {
     ...activo,
     cantidad: Number(activo.cantidad),
@@ -87,6 +94,7 @@ function activoDTO(activo, mantenimientos = []) {
     antiguedad_meses: meses,
     vida_util_vencida: vida !== null && meses > vida,
     mantenimientos: ordenados.length,
+    proximo_mantenimiento: proximoMantenimiento,
     ultimo_mantenimiento: ultimo
       ? {
         id: ultimo.id,

@@ -11,6 +11,7 @@ const {
   requiredArray,
   optionalString,
   optionalDate,
+  optionalInt,
   optionalAfter,
   paginate,
   pageParams,
@@ -21,6 +22,10 @@ const {
 
 const TIPOS_MOVIMIENTO = ['entrada', 'salida', 'merma', 'ajuste', 'devolucion'];
 const CAMPOS_ORDEN_MOVIMIENTO = ['id', 'fecha', 'cantidad'];
+const DIAS_CONSUMO_DEFAULT = 7;
+// PostgREST devuelve como máximo 1000 filas por consulta: el consumo se lee
+// por lotes hasta agotar para no subestimar las salidas.
+const LIMITE_FILAS_CONSUMO = 1000;
 
 function fechaLima(iso) {
   if (!iso) {
@@ -153,6 +158,90 @@ function finExclusivo(fecha) {
   const [anio, mes, dia] = fecha.split('-').map(Number);
   const siguiente = new Date(Date.UTC(anio, mes - 1, dia + 1));
   return siguiente.toISOString().slice(0, 10);
+}
+
+// Rango inclusivo de N días calendario en America/Lima, terminando hoy.
+function rangoConsumo(dias) {
+  const hasta = store.today();
+  const [anio, mes, dia] = hasta.split('-').map(Number);
+  const desde = new Date(Date.UTC(anio, mes - 1, dia - (dias - 1)))
+    .toISOString()
+    .slice(0, 10);
+  const fin = finExclusivo(hasta);
+  return {
+    desde,
+    hasta,
+    inicioIso: new Date(`${desde}T00:00:00-05:00`).toISOString(),
+    finIso: new Date(`${fin}T00:00:00-05:00`).toISOString(),
+  };
+}
+
+function resumirConsumo(movimientos, dias) {
+  const acumulado = new Map();
+  for (const movimiento of movimientos) {
+    const insumoId = Number(movimiento.insumo_id);
+    const cantidad = Number(movimiento.cantidad);
+    if (!Number.isFinite(insumoId) || !Number.isFinite(cantidad) || !(cantidad > 0)) {
+      continue;
+    }
+    acumulado.set(insumoId, (acumulado.get(insumoId) || 0) + cantidad);
+  }
+  return [...acumulado.entries()]
+    .map(([insumoId, total]) => ({
+      insumo_id: insumoId,
+      consumo: store.round3(total),
+      promedio_diario: store.round2(total / dias),
+    }))
+    .filter((fila) => fila.consumo > 0)
+    .sort((a, b) => a.insumo_id - b.insumo_id);
+}
+
+async function leerSalidasConsumo(rango) {
+  const filas = [];
+  for (let inicio = 0; ; inicio += LIMITE_FILAS_CONSUMO) {
+    const { data, error } = await repository
+      .table('movimientos_inventario')
+      .select('insumo_id, cantidad')
+      .eq('tipo', 'salida')
+      .gte('fecha', rango.inicioIso)
+      .lt('fecha', rango.finIso)
+      .order('id', { ascending: true })
+      .range(inicio, inicio + LIMITE_FILAS_CONSUMO - 1);
+    if (error) {
+      throw db.persistenceError('No se pudo calcular el consumo de inventario.', error);
+    }
+    const lote = data || [];
+    filas.push(...lote);
+    if (lote.length < LIMITE_FILAS_CONSUMO) {
+      break;
+    }
+  }
+  return filas;
+}
+
+// Consumo real por insumo: suma de salidas de los últimos `dias` días (1..90).
+async function consumoPorInsumo({ dias } = {}) {
+  const totalDias = optionalInt(dias, 'dias', { min: 1, max: 90 }) || DIAS_CONSUMO_DEFAULT;
+  const rango = rangoConsumo(totalDias);
+
+  let movimientos;
+  if (db.isSupabase()) {
+    movimientos = await leerSalidasConsumo(rango);
+  } else {
+    movimientos = store.state.movimientos_inventario
+      .filter((movimiento) => movimiento.tipo === 'salida')
+      .filter((movimiento) => {
+        const fecha = String(movimiento.fecha || '').slice(0, 10);
+        return fecha >= rango.desde && fecha <= rango.hasta;
+      });
+  }
+
+  return {
+    dias: totalDias,
+    desde: rango.desde,
+    hasta: rango.hasta,
+    data: resumirConsumo(movimientos, totalDias),
+  };
 }
 
 function valorOrdenMovimiento(fila, campo) {
@@ -507,6 +596,7 @@ module.exports = {
   estadoStock,
   listInventario,
   listAlertas,
+  consumoPorInsumo,
   listMovimientos,
   historialMovimientos,
   verificarStock,

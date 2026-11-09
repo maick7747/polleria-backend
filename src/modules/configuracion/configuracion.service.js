@@ -602,6 +602,75 @@ function valorConfig(valor) {
   return Number.isFinite(numero) ? numero : valor;
 }
 
+// Claves tipo flag que usa el frontend: se guardan como '0'/'1'.
+const CONFIG_FLAGS = [
+  'redondeo_activo',
+  'aviso_mozo_activo',
+  'canal_local',
+  'canal_llevar',
+  'canal_delivery_propio',
+  'canal_delivery_externo',
+  'pago_efectivo',
+  'pago_tarjeta',
+  'pago_yape',
+  'pago_plin',
+];
+
+const CONFIG_DEFAULTS = {
+  tarifa_delivery: 5,
+  redondeo_activo: '0',
+  aviso_mozo_activo: '1',
+  canal_local: '1',
+  canal_llevar: '1',
+  canal_delivery_propio: '1',
+  canal_delivery_externo: '1',
+  pago_efectivo: '1',
+  pago_tarjeta: '1',
+  pago_yape: '1',
+  pago_plin: '1',
+};
+
+// Acepta 0 | 1 | '0' | '1' | true | false y normaliza a '1'/'0'.
+function normalizarFlag(valor, campo) {
+  if (typeof valor === 'boolean') {
+    return valor ? '1' : '0';
+  }
+  if (valor === 1 || valor === '1') {
+    return '1';
+  }
+  if (valor === 0 || valor === '0') {
+    return '0';
+  }
+  throw new AppError(
+    400,
+    'VALIDATION_ERROR',
+    `El campo "${campo}" debe ser 0, 1, true o false.`,
+    [{ field: campo, value: valor }],
+  );
+}
+
+// Lectura tolerante: un valor ausente cae al default; cualquier valor guardado
+// se interpreta como encendido/apagado sin lanzar.
+function flagLeido(valor, porDefecto) {
+  if (valor === undefined || valor === null || valor === '') {
+    return porDefecto;
+  }
+  if (typeof valor === 'boolean') {
+    return valor ? '1' : '0';
+  }
+  const texto = String(valor).trim().toLowerCase();
+  return texto === '1' || texto === 'true' ? '1' : '0';
+}
+
+function completarRaw(base = {}) {
+  const raw = { ...CONFIG_DEFAULTS, ...base };
+  for (const clave of CONFIG_FLAGS) {
+    raw[clave] = flagLeido(raw[clave], CONFIG_DEFAULTS[clave]);
+  }
+  raw.tarifa_delivery = valorConfig(raw.tarifa_delivery);
+  return raw;
+}
+
 async function getConfiguracion() {
   if (!db.isSupabase()) {
     return {
@@ -612,7 +681,7 @@ async function getConfiguracion() {
       comision_llamafood: store.getConfig('comision_llamafood_pct'),
       sla_delivery_min: store.getConfig('sla_delivery_min'),
       umbral_merma_pollo_pct: store.getConfig('umbral_merma_pollo_pct'),
-      raw: { ...store.state.config },
+      raw: completarRaw(store.state.config),
     };
   }
 
@@ -640,7 +709,14 @@ async function getConfiguracion() {
     comision_llamafood: leer('comision_llamafood_pct'),
     sla_delivery_min: leer('sla_delivery_min'),
     umbral_merma_pollo_pct: leer('umbral_merma_pollo_pct'),
-    raw: Object.fromEntries(filas.map((fila) => [fila.clave, valorConfig(fila.valor)])),
+    raw: completarRaw(
+      Object.fromEntries(
+        filas.map((fila) => [
+          fila.clave,
+          CONFIG_FLAGS.includes(fila.clave) ? fila.valor : valorConfig(fila.valor),
+        ]),
+      ),
+    ),
   };
 }
 
@@ -657,27 +733,35 @@ async function updateConfiguracion(body) {
     ['comision_llamafood_pct', 'comision_llamafood_pct', 0, 100],
     ['sla_delivery_min', 'sla_delivery_min', 1, 240],
     ['umbral_merma_pollo_pct', 'umbral_merma_pollo_pct', 0, 100],
+    ['tarifa_delivery', 'tarifa_delivery', 0, 1000],
   ];
 
+  // Se resuelven y validan todos los cambios antes de persistir: un valor
+  // inválido no deja la configuración a medio actualizar.
+  const cambios = new Map();
+  for (const [key, configKey, min, max] of mapping) {
+    if (payload[key] !== undefined) {
+      cambios.set(configKey, {
+        flag: false,
+        valor: requiredNumber(payload[key], key, { min, max }),
+      });
+    }
+  }
+  for (const clave of CONFIG_FLAGS) {
+    if (payload[clave] !== undefined) {
+      cambios.set(clave, { flag: true, valor: normalizarFlag(payload[clave], clave) });
+    }
+  }
+
   if (!db.isSupabase()) {
-    for (const [key, configKey, min, max] of mapping) {
-      if (payload[key] !== undefined) {
-        const valor = requiredNumber(payload[key], key, { min, max });
-        store.updateConfig(configKey, store.round2(valor));
-      }
+    for (const [clave, cambio] of cambios) {
+      store.updateConfig(clave, cambio.flag ? cambio.valor : store.round2(cambio.valor));
     }
     return getConfiguracion();
   }
 
-  const cambios = new Map();
-  for (const [key, configKey, min, max] of mapping) {
-    if (payload[key] !== undefined) {
-      const valor = requiredNumber(payload[key], key, { min, max });
-      cambios.set(configKey, db.round2(valor));
-    }
-  }
-
-  for (const [clave, valor] of cambios) {
+  for (const [clave, cambio] of cambios) {
+    const valor = cambio.flag ? cambio.valor : db.round2(cambio.valor);
     try {
       const actualizados = await repository.updateWhere(
         'configuracion',

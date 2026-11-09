@@ -26,6 +26,13 @@ router.get('/alertas', permiso, manejar(async (req, res) => {
   res.json(await service.listAlertas());
 }));
 
+// GET /api/inventario/consumo?dias=7
+// Salidas reales de los últimos `dias` (1..90, default 7) en America/Lima,
+// agrupadas por insumo. Debe declararse antes de /:insumoId/movimientos.
+router.get('/consumo', permiso, manejar(async (req, res) => {
+  res.json(await service.consumoPorInsumo({ dias: req.query.dias }));
+}));
+
 // Debe declararse antes de cualquier ruta /:id para no colisionar.
 // GET /api/inventario/movimientos?tipo=&insumo_id=&desde=&hasta=&sort=&page=&limit=&after=<id>
 // `after` (entero >= 1) devuelve solo movimientos con id mayor al cursor.

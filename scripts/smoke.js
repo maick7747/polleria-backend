@@ -216,6 +216,92 @@ function resumen(value) {
       }
     }
 
+    // ---- Configuración persistente: tarifa y flags de canales/pagos ----
+    const configInicial = await request(base, 'GET', '/configuracion', { token });
+    const rawInicial = configInicial.body && configInicial.body.raw ? configInicial.body.raw : null;
+    const configGetOk =
+      configInicial.status === 200 &&
+      rawInicial !== null &&
+      Object.prototype.hasOwnProperty.call(rawInicial, 'tarifa_delivery');
+    results.push({
+      name: 'GET /api/configuracion (raw.tarifa_delivery)',
+      status: configGetOk ? 200 : 500,
+      detail: configGetOk
+        ? `tarifa_delivery=${rawInicial.tarifa_delivery} · redondeo=${rawInicial.redondeo_activo} · aviso_mozo=${rawInicial.aviso_mozo_activo}`
+        : JSON.stringify(configInicial.body),
+    });
+    if (!configGetOk) {
+      throw new Error(`GET /api/configuracion no devolvió raw.tarifa_delivery: ${JSON.stringify(configInicial.body)}`);
+    }
+
+    const configEsperada = (raw) =>
+      Boolean(raw) &&
+      Number(raw.tarifa_delivery) === 7 &&
+      String(raw.redondeo_activo) === '1' &&
+      String(raw.canal_local) === '0' &&
+      String(raw.pago_yape) === '0';
+    const configPut = await request(base, 'PUT', '/configuracion', {
+      token,
+      body: { tarifa_delivery: 7, redondeo_activo: '1', canal_local: '0', pago_yape: '0' },
+    });
+    const configPutOk =
+      configPut.status === 200 && configEsperada(configPut.body && configPut.body.raw);
+    results.push({
+      name: 'PUT /api/configuracion (tarifa + flags)',
+      status: configPutOk ? 200 : 500,
+      detail: configPutOk
+        ? `tarifa=${configPut.body.raw.tarifa_delivery} · redondeo=${configPut.body.raw.redondeo_activo} · canal_local=${configPut.body.raw.canal_local} · pago_yape=${configPut.body.raw.pago_yape}`
+        : JSON.stringify(configPut.body),
+    });
+    if (!configPutOk) {
+      throw new Error(`PUT /api/configuracion no devolvió los valores normalizados: ${JSON.stringify(configPut.body)}`);
+    }
+
+    const configReleida = await request(base, 'GET', '/configuracion', { token });
+    const configReleidaOk =
+      configReleida.status === 200
+      && configEsperada(configReleida.body && configReleida.body.raw);
+    results.push({
+      name: 'GET /api/configuracion (relectura tras PUT)',
+      status: configReleidaOk ? 200 : 500,
+      detail: configReleidaOk
+        ? `tarifa=${configReleida.body.raw.tarifa_delivery} · redondeo=${configReleida.body.raw.redondeo_activo} · canal_local=${configReleida.body.raw.canal_local} · pago_yape=${configReleida.body.raw.pago_yape}`
+        : JSON.stringify(configReleida.body),
+    });
+    if (!configReleidaOk) {
+      throw new Error(`La configuración no se mantuvo tras releerla: ${JSON.stringify(configReleida.body)}`);
+    }
+
+    // Restaurar los valores originales para no contaminar el resto del smoke.
+    const restauracion = {};
+    if (rawInicial) {
+      if (rawInicial.tarifa_delivery !== undefined) {
+        restauracion.tarifa_delivery = rawInicial.tarifa_delivery;
+      }
+      for (const clave of ['redondeo_activo', 'canal_local', 'pago_yape']) {
+        if (rawInicial[clave] !== undefined) {
+          restauracion[clave] = rawInicial[clave];
+        }
+      }
+    }
+    if (Object.keys(restauracion).length > 0) {
+      const configRestaurada = await request(base, 'PUT', '/configuracion', {
+        token,
+        body: restauracion,
+      });
+      const restauracionOk = configRestaurada.status === 200;
+      results.push({
+        name: 'PUT /api/configuracion (restaurar originales)',
+        status: restauracionOk ? 200 : 500,
+        detail: restauracionOk
+          ? `tarifa=${configRestaurada.body.raw.tarifa_delivery} · redondeo=${configRestaurada.body.raw.redondeo_activo} · canal_local=${configRestaurada.body.raw.canal_local} · pago_yape=${configRestaurada.body.raw.pago_yape}`
+          : JSON.stringify(configRestaurada.body),
+      });
+      if (!restauracionOk) {
+        throw new Error(`No se pudieron restaurar los valores originales de configuración: ${JSON.stringify(configRestaurada.body)}`);
+      }
+    }
+
     // ---- Fase 3: ETag/304 en tablero y resumen agregado ----
     const tablero1 = await request(base, 'GET', '/venta-local/tablero', { token });
     const tableroEtag = tablero1.headers.get('etag');
@@ -330,6 +416,32 @@ function resumen(value) {
     });
     if (!inventarioMetaOk) {
       throw new Error('El inventario no devolvió paginación/meta completos.');
+    }
+
+    const consumoInventario = await request(base, 'GET', '/inventario/consumo?dias=7', { token });
+    const consumoOk =
+      consumoInventario.ok &&
+      Array.isArray(consumoInventario.body.data) &&
+      consumoInventario.body.dias === 7 &&
+      typeof consumoInventario.body.desde === 'string' &&
+      typeof consumoInventario.body.hasta === 'string' &&
+      consumoInventario.body.data.every(
+        (fila) =>
+          typeof fila.insumo_id === 'number' &&
+          typeof fila.consumo === 'number' &&
+          typeof fila.promedio_diario === 'number',
+      );
+    results.push({
+      name: 'GET /api/inventario/consumo?dias=7',
+      status: consumoOk ? 200 : 500,
+      detail: consumoOk
+        ? `${consumoInventario.body.data.length} insumos · ${consumoInventario.body.desde} -> ${consumoInventario.body.hasta}`
+        : JSON.stringify(consumoInventario.body),
+    });
+    if (!consumoOk) {
+      throw new Error(
+        `El consumo de inventario no devolvió data/dias válidos: ${JSON.stringify(consumoInventario.body)}`,
+      );
     }
 
     // ---- Fichas y platillos: escrituras (PATCH /platillos, PUT /ficha) ----
@@ -1086,6 +1198,37 @@ function resumen(value) {
     });
     if (!mantenimientoOk) {
       throw new Error(`El mantenimiento no se registró/listó: ${JSON.stringify(mantenimientosActivo.body)}`);
+    }
+
+    // El DTO de activos expone la fecha programada más próxima (o null).
+    const activoProximo = await request(base, 'GET', '/activos?page=1&limit=100&sort=id:desc', { token });
+    const fichaProximo = Array.isArray(activoProximo.body && activoProximo.body.data)
+      ? activoProximo.body.data.find((item) => item.id === activoCreado.body.id)
+      : null;
+    const proximoMantenimientoOk =
+      activoProximo.ok &&
+      Array.isArray(activoProximo.body.data) &&
+      activoProximo.body.data.every(
+        (activo) => Object.prototype.hasOwnProperty.call(activo, 'proximo_mantenimiento'),
+      ) &&
+      Boolean(fichaProximo) &&
+      fichaProximo.proximo_mantenimiento !== null &&
+      String(fichaProximo.proximo_mantenimiento).slice(0, 10) === '2026-12-01';
+    results.push({
+      name: 'GET /api/activos (proximo_mantenimiento)',
+      status: proximoMantenimientoOk ? 200 : 500,
+      detail: proximoMantenimientoOk
+        ? `activo=${activoCreado.body.id} · proximo_mantenimiento=${fichaProximo.proximo_mantenimiento}`
+        : JSON.stringify({
+          status: activoProximo.status,
+          creado: activoCreado.body.id,
+          ficha: fichaProximo,
+        }),
+    });
+    if (!proximoMantenimientoOk) {
+      throw new Error(
+        `GET /api/activos no expuso proximo_mantenimiento con la fecha programada: ${JSON.stringify({ creado: activoCreado.body.id, ficha: fichaProximo })}`,
+      );
     }
 
     const sortActivoInvalido = await request(base, 'GET', '/activos?sort=inventado:desc', { token });
