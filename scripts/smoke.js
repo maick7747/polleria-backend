@@ -152,6 +152,28 @@ function resumen(value) {
     }
     const token = login.body.token;
 
+    // ---- Login por alias (`usuarios.usuario`), no por correo ----
+    const loginAlias = await request(base, 'POST', '/auth/login', {
+      body: { usuario: 'maick', password: 'demo123' },
+    });
+    const loginAliasOk =
+      loginAlias.ok &&
+      Boolean(loginAlias.body.token) &&
+      loginAlias.body.usuario &&
+      loginAlias.body.usuario.usuario === 'maick' &&
+      loginAlias.body.usuario.email === 'maick@fratellis.pe';
+    results.push({
+      name: 'POST /api/auth/login (por usuario)',
+      status: loginAliasOk ? 200 : 500,
+      detail: loginAliasOk
+        ? `usuario=${loginAlias.body.usuario.usuario} · roles=${(loginAlias.body.roles || []).join('+')}`
+        : JSON.stringify(loginAlias.body),
+    });
+    if (!loginAliasOk) {
+      throw new Error(`El login por alias no devolvió el usuario real: ${JSON.stringify(loginAlias.body)}`);
+    }
+
+
     const checks = [
       ['GET /api/dashboard', '/dashboard'],
       ['GET /api/venta-local/mesas', '/venta-local/mesas'],
@@ -727,6 +749,72 @@ function resumen(value) {
       throw new Error(`La devolución no se resolvió con merma: ${JSON.stringify(devolucionResuelta.body)}`);
     }
 
+    // ---- Devolución con reembolso: histórico en devolucion_reembolsos ----
+    const devolucionReembolso = await request(base, 'POST', '/devoluciones', {
+      token,
+      body: {
+        pedido_id: ronda1.body.id,
+        motivo: 'Devolución smoke con reembolso',
+        detalle: 'Creada para verificar el histórico de reembolsos',
+      },
+    });
+    const resolucionReembolso = await request(
+      base,
+      'POST',
+      `/devoluciones/${devolucionReembolso.body.id}/resolver`,
+      {
+        token,
+        body: {
+          estado: 'aceptada',
+          resolucion: 'reembolso_parcial',
+          monto_reembolsado: 0,
+          detalle_resolucion: 'Se devuelve parte del monto al cliente',
+        },
+      },
+    );
+    const reembolsoCreado = await request(
+      base,
+      'POST',
+      `/devoluciones/${devolucionReembolso.body.id}/reembolso`,
+      { token, body: { metodo: 'efectivo', monto: 5, observacion: 'Reembolso smoke' } },
+    );
+    const devolucionDetalle = await request(
+      base,
+      'GET',
+      `/devoluciones/${devolucionReembolso.body.id}`,
+      { token },
+    );
+    const reembolsosDetalle = Array.isArray(devolucionDetalle.body?.reembolsos)
+      ? devolucionDetalle.body.reembolsos
+      : [];
+    const reembolsoOk =
+      devolucionReembolso.status === 201 &&
+      resolucionReembolso.ok &&
+      resolucionReembolso.body.detalle_resolucion === 'Se devuelve parte del monto al cliente' &&
+      reembolsoCreado.ok &&
+      reembolsoCreado.body.reembolso &&
+      Number(reembolsoCreado.body.reembolso.monto) === 5 &&
+      reembolsoCreado.body.reembolso.observacion === 'Reembolso smoke' &&
+      devolucionDetalle.ok &&
+      reembolsosDetalle.some(
+        (item) => Number(item.monto) === 5 && item.observacion === 'Reembolso smoke',
+      );
+    results.push({
+      name: 'POST /api/devoluciones/:id/reembolso (histórico)',
+      status: reembolsoOk ? 200 : 500,
+      detail: reembolsoOk
+        ? `devolucion=${devolucionReembolso.body.id} · reembolsos=${reembolsosDetalle.length} · monto=${reembolsoCreado.body.reembolso.monto}`
+        : JSON.stringify({
+          creada: devolucionReembolso.body,
+          resolucion: resolucionReembolso.body,
+          reembolso: reembolsoCreado.body,
+          detalle: devolucionDetalle.body,
+        }),
+    });
+    if (!reembolsoOk) {
+      throw new Error('El reembolso no quedó visible en devolucion_reembolsos (DTO).');
+    }
+
     const activoCreado = await request(base, 'POST', '/activos', {
       token,
       body: {
@@ -886,6 +974,171 @@ function resumen(value) {
     });
     if (!usuarioOk) {
       throw new Error('El alta/roles/baja del usuario no devolvió lo esperado.');
+    }
+
+    // ---- Alias: derivación desde el correo y actualización ----
+    const usuarioSinAlias = await request(base, 'POST', '/configuracion/usuarios', {
+      token,
+      body: {
+        nombre: 'Usuario Derivado Smoke',
+        email: `derivado-${sufijo}@fratellis.pe`,
+        clave: 'demo123',
+        roles: ['Mozo'],
+      },
+    });
+    const aliasEsperado = `derivado-${sufijo}`;
+    const usuarioAliasEditado = await request(
+      base,
+      'PATCH',
+      `/configuracion/usuarios/${usuarioSinAlias.body.id}`,
+      { token, body: { usuario: `alias${sufijo}` } },
+    );
+    const aliasOk =
+      usuarioSinAlias.status === 201 &&
+      usuarioSinAlias.body.usuario === aliasEsperado &&
+      usuarioAliasEditado.ok &&
+      usuarioAliasEditado.body.usuario === `alias${sufijo}`;
+    results.push({
+      name: 'POST/PATCH /api/configuracion/usuarios (usuario)',
+      status: aliasOk ? 201 : 500,
+      detail: aliasOk
+        ? `${usuarioSinAlias.body.usuario} -> ${usuarioAliasEditado.body.usuario}`
+        : JSON.stringify({ creado: usuarioSinAlias.body, patch: usuarioAliasEditado.body }),
+    });
+    if (!aliasOk) {
+      throw new Error('El alias de usuario no se derivó/actualizó como se esperaba.');
+    }
+
+    // ---- Delivery propio: estado_entrega persistido ----
+    const usuariosReparto = await request(
+      base,
+      'GET',
+      '/configuracion/usuarios?page=1&limit=50',
+      { token },
+    );
+    const repartidor = (usuariosReparto.body.data || []).find(
+      (usuario) => Array.isArray(usuario.roles) && usuario.roles.includes('Repartidor'),
+    );
+    if (!repartidor) {
+      throw new Error('No hay un usuario con rol Repartidor para la prueba de delivery propio.');
+    }
+
+    const deliveryCreado = await request(base, 'POST', '/delivery-propio/pedidos', {
+      token,
+      body: {
+        canal: 'whatsapp',
+        cliente: {
+          nombre: 'Cliente Delivery Smoke',
+          telefono: '999123456',
+          direccion: 'Jr. Delivery Smoke 123',
+        },
+        items: [{ platillo_id: 3, cantidad: 1 }],
+        enviar_cocina: false,
+      },
+    });
+    const repartidorAsignado = await request(
+      base,
+      'PATCH',
+      `/delivery-propio/pedidos/${deliveryCreado.body.id}/repartidor`,
+      { token, body: { repartidor_id: repartidor.id } },
+    );
+    const enCamino = await request(
+      base,
+      'PATCH',
+      `/delivery-propio/pedidos/${deliveryCreado.body.id}/estado`,
+      { token, body: { estado: 'en_camino' } },
+    );
+    const listadoEnCamino = await request(
+      base,
+      'GET',
+      '/delivery-propio/pedidos?estado=en_camino&limit=50',
+      { token },
+    );
+    const entrega = await request(
+      base,
+      'POST',
+      `/delivery-propio/pedidos/${deliveryCreado.body.id}/entrega`,
+      { token, body: { metodo: 'efectivo' } },
+    );
+    const listadoEntregado = await request(
+      base,
+      'GET',
+      '/delivery-propio/pedidos?estado=entregado&limit=50',
+      { token },
+    );
+    const deliveryOk =
+      deliveryCreado.status === 201 &&
+      deliveryCreado.body.estado_entrega === 'pendiente' &&
+      repartidorAsignado.ok &&
+      enCamino.ok &&
+      enCamino.body.estado_entrega === 'en_camino' &&
+      listadoEnCamino.ok &&
+      listadoEnCamino.body.data.some((pedido) => pedido.id === deliveryCreado.body.id) &&
+      entrega.ok &&
+      entrega.body.pedido &&
+      entrega.body.pedido.estado_entrega === 'entregado' &&
+      listadoEntregado.ok &&
+      listadoEntregado.body.data.some((pedido) => pedido.id === deliveryCreado.body.id);
+    results.push({
+      name: 'Delivery propio (estado_entrega pendiente→en_camino→entregado)',
+      status: deliveryOk ? 200 : 500,
+      detail: deliveryOk
+        ? `pedido=${deliveryCreado.body.id} · pendiente -> en_camino -> entregado`
+        : JSON.stringify({
+          creado: deliveryCreado.body,
+          repartidor: repartidorAsignado.body,
+          enCamino: enCamino.body,
+          listaEnCamino: listadoEnCamino.body,
+          entrega: entrega.body,
+          listaEntregado: listadoEntregado.body,
+        }),
+    });
+    if (!deliveryOk) {
+      throw new Error('El delivery propio no persistió el estado_entrega en la lista.');
+    }
+
+    // ---- Liquidación externa persistida ----
+    const liquidacionCreada = await request(base, 'POST', '/delivery-externo/liquidaciones', {
+      token,
+      body: {
+        plataforma: 'rappi',
+        desde: '2026-11-01',
+        hasta: '2026-11-07',
+        monto_bruto: 100,
+        comision: 25,
+        observacion: 'Liquidación smoke',
+      },
+    });
+    const liquidaciones = await request(
+      base,
+      'GET',
+      '/delivery-externo/liquidaciones?page=1&limit=10&plataforma=rappi&desde=2026-11-01&hasta=2026-11-30&sort=creado_en:desc',
+      { token },
+    );
+    const liquidacionFila = (liquidaciones.body.data || []).find(
+      (item) => item.id === liquidacionCreada.body.id,
+    );
+    const liquidacionOk =
+      liquidacionCreada.status === 201 &&
+      liquidacionCreada.body.persistido === true &&
+      typeof liquidacionCreada.body.id === 'number' &&
+      Number(liquidacionCreada.body.monto_neto) === 75 &&
+      liquidacionCreada.body.estado === 'registrada' &&
+      liquidaciones.ok &&
+      liquidaciones.body.meta &&
+      liquidaciones.body.meta.origen === 'persistido' &&
+      liquidaciones.body.meta.limitacion === undefined &&
+      Boolean(liquidacionFila) &&
+      Number(liquidacionFila.monto_neto) === 75;
+    results.push({
+      name: 'POST+GET /api/delivery-externo/liquidaciones (persistida)',
+      status: liquidacionOk ? 201 : 500,
+      detail: liquidacionOk
+        ? `id=${liquidacionCreada.body.id} · neto=${liquidacionFila.monto_neto} · meta.origen=${liquidaciones.body.meta.origen}`
+        : JSON.stringify({ creada: liquidacionCreada.body, lista: liquidaciones.body }),
+    });
+    if (!liquidacionOk) {
+      throw new Error('La liquidación externa no quedó persistida/listada.');
     }
 
     const rolesCatalogo = await request(base, 'GET', '/configuracion/roles', { token });

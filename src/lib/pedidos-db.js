@@ -136,6 +136,7 @@ async function createPedidoRecord(options) {
     fecha_inicio_prep: null,
     fecha_listo: null,
     fecha_entrega: null,
+    estado_entrega: tipo_consumo === 'delivery' ? 'pendiente' : null,
     creado_en: db.nowIso(),
   };
 

@@ -4,12 +4,9 @@
 // - DB_MODE=memory   -> store.js (comportamiento histórico).
 // - DB_MODE=supabase -> repository/pedidos-db (tablas reales).
 //
-// Limitación conocida del esquema Supabase: `pedidos` no tiene la columna
-// `estado_entrega` (solo existe en el store en memoria). Por eso:
-//   * `entregado` se persiste con `fecha_entrega` (columna real) y se deriva.
-//   * `en_camino` se intenta guardar en `estado_entrega`; si la columna no
-//     existe, la transición solo se refleja en la respuesta (best-effort).
-// Los listados derivan `estado_entrega` de `fecha_entrega`/`estado`.
+// `pedidos.estado_entrega` (migración 009) guarda la transición completa:
+// 'pendiente' al crear, 'en_camino' al despachar y 'entregado' al cobrar o
+// marcar la entrega. `fecha_entrega` sigue siendo la marca de tiempo real.
 
 const store = require('../../data/store');
 const repository = require('../../data/repository');
@@ -46,19 +43,6 @@ function aNumero(valor) {
   return Number.isFinite(numero) ? numero : 0;
 }
 
-function esColumnaInexistente(error) {
-  if (!error) {
-    return false;
-  }
-  const codigo = error.code === undefined || error.code === null ? '' : String(error.code);
-  if (codigo === '42703') {
-    return true;
-  }
-  return /column .* does not exist|Could not find the '.*' column/i.test(
-    `${error.message || ''} ${error.details || ''} ${error.hint || ''}`,
-  );
-}
-
 function minutosDesde(fecha) {
   const milisegundos = Date.parse(fecha);
   if (!Number.isFinite(milisegundos)) {
@@ -67,8 +51,8 @@ function minutosDesde(fecha) {
   return Math.max(0, Math.round((Date.now() - milisegundos) / 60000));
 }
 
-// `entregado` se deduce de la fecha real de entrega (o del estado cobrado);
-// el resto de transiciones vive en `estado_entrega` cuando la columna existe.
+// `estado_entrega` es la fuente; las filas anteriores a la migración 009 se
+// deducen de `fecha_entrega` o del estado cobrado.
 function estadoEntregaDesdeFila(fila) {
   if (fila.estado_entrega !== undefined && fila.estado_entrega !== null) {
     return fila.estado_entrega;
@@ -254,6 +238,7 @@ async function crearPedidoBaseSupabase(options) {
       : null,
     comprobante_tipo: 'ticket',
     comprobante_numero: null,
+    estado_entrega: 'pendiente',
   };
 
   let pedido;
@@ -414,14 +399,8 @@ async function listPedidosSupabase(filtros, query) {
     .in('canal', CANALES_PROPIO_DB);
 
   if (filtros.estado) {
-    if (filtros.estado === 'entregado') {
-      consulta = consulta.not('fecha_entrega', 'is', null);
-    } else if (filtros.estado === 'en_camino') {
-      // Sin columna estado_entrega, se aproxima: pedido listo/servido con
-      // repartidor asignado y sin fecha de entrega registrada.
-      consulta = consulta
-        .in('estado', ['en_cocina', 'servido'])
-        .is('fecha_entrega', null);
+    if (ESTADOS_ENTREGA.includes(filtros.estado)) {
+      consulta = consulta.eq('estado_entrega', filtros.estado);
     } else {
       consulta = consulta.eq('estado', filtros.estado);
     }
@@ -514,7 +493,7 @@ async function crearPedidoMemoriaSinLineas(options) {
     fecha_inicio_prep: null,
     fecha_listo: null,
     fecha_entrega: null,
-    estado_entrega: null,
+    estado_entrega: 'pendiente',
     stock_descontado: false,
     creado_en: ahora,
   };
@@ -634,29 +613,18 @@ async function actualizarEstado(id, body) {
   }
 
   if (db.isSupabase()) {
-    const patch = {};
+    const patch = { estado_entrega: estado };
     if (estado === 'entregado') {
-      patch.fecha_entrega = db.nowIso();
+      patch.fecha_entrega = pedido.fecha_entrega || db.nowIso();
     }
 
     let actualizado;
     try {
-      actualizado = await repository.update('pedidos', pedido.id, {
-        ...patch,
-        estado_entrega: estado,
-      });
+      actualizado = await repository.update('pedidos', pedido.id, patch);
     } catch (error) {
-      if (!esColumnaInexistente(error)) {
-        throw db.persistenceError('No se pudo actualizar el estado de entrega.', error);
-      }
-      // `estado_entrega` no existe en el esquema: `entregado` queda
-      // persistido por fecha_entrega; `en_camino` solo vive en la respuesta.
-      actualizado = Object.keys(patch).length > 0
-        ? await repository.update('pedidos', pedido.id, patch)
-        : pedido;
+      throw db.persistenceError('No se pudo actualizar el estado de entrega.', error);
     }
-
-    const dto = await pedidosDb.pedidoConDetalles(actualizado || pedido);
+    const dto = await pedidosDb.pedidoConDetalles(actualizado || { ...pedido, ...patch });
     return { ...dto, estado_entrega: estado };
   }
 
@@ -735,23 +703,13 @@ async function registrarEntrega(id, body, usuario) {
 
   let actualizado;
   try {
-    const patch = {
+    actualizado = await repository.update('pedidos', pedido.id, {
       estado: 'cobrado',
       estado_pago: 'pagado',
       metodo_pago: metodo,
       fecha_entrega: pedido.fecha_entrega || ahora,
-    };
-    try {
-      actualizado = await repository.update('pedidos', pedido.id, {
-        ...patch,
-        estado_entrega: 'entregado',
-      });
-    } catch (error) {
-      if (!esColumnaInexistente(error)) {
-        throw error;
-      }
-      actualizado = await repository.update('pedidos', pedido.id, patch);
-    }
+      estado_entrega: 'entregado',
+    });
   } catch (error) {
     try {
       await repository.remove('pagos', pago.id);
@@ -782,5 +740,4 @@ module.exports = {
   actualizarEstado,
   registrarEntrega,
   crearPedidoBaseSupabase,
-  esColumnaInexistente,
 };

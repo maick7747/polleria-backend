@@ -66,6 +66,9 @@ function mantenimientoDTO(mantenimiento) {
     ...mantenimiento,
     costo_reparacion: db.round2(aNumero(mantenimiento.costo_reparacion)),
     costo_reposicion: db.round2(aNumero(mantenimiento.costo_reposicion)),
+    fecha_autorizacion: mantenimiento.fecha_autorizacion === undefined
+      ? null
+      : mantenimiento.fecha_autorizacion,
   };
 }
 
@@ -449,6 +452,7 @@ async function crearMantenimiento(id, body, usuario) {
     const registro = {
       id: store.nextId('mantenimientos'),
       ...mantenimiento,
+      fecha_autorizacion: null,
       creado_en: store.nowIso(),
     };
     store.state.mantenimientos.push(registro);
@@ -477,6 +481,7 @@ async function autorizarMantenimientoSupabase(mantenimiento, payload) {
   const patchMantenimiento = {
     decision,
     estado: decision === 'reparar' ? 'en_proceso' : 'completado',
+    fecha_autorizacion: db.nowIso(),
   };
 
   let actualizado;

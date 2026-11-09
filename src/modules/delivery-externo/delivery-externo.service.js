@@ -4,12 +4,9 @@
 // - DB_MODE=memory   -> store.js (comportamiento histórico).
 // - DB_MODE=supabase -> repository/pedidos-db.
 //
-// Limitación declarada: el esquema Supabase NO tiene tabla de liquidaciones.
-// Por eso `GET/POST /liquidaciones` trabajan en modo derivado (cálculo sobre
-// pedidos de delivery externo) y lo informan en `meta.limitacion`.
-// Las columnas `motivo_cancelacion`/`fecha_cancelacion` tampoco existen: se
-// intentan persistir y, si faltan, solo se guarda el estado `cancelado`
-// (mismo criterio que compras.cancelar).
+// Las liquidaciones viven en la tabla `liquidaciones` (migración 009): el alta
+// guarda el cálculo y el listado lee filas persistidas. Las columnas
+// `motivo_cancelacion`/`fecha_cancelacion` de `pedidos` también existen.
 
 const store = require('../../data/store');
 const repository = require('../../data/repository');
@@ -33,10 +30,7 @@ const deliveryPropio = require('../delivery-propio/delivery-propio.service');
 const PLATAFORMAS = ['rappi', 'llamafood'];
 const ESTADOS = ['borrador', 'en_cocina', 'servido', 'cobrado', 'cancelado'];
 const CAMPOS_ORDEN = ['id', 'fecha_pedido', 'total', 'estado'];
-const LIMITACION_LIQUIDACIONES =
-  'El esquema no tiene tabla de liquidaciones: los montos se derivan de los pedidos '
-  + 'de delivery externo con estado distinto de cancelado. No representan la '
-  + 'liquidación oficial de Rappi/LlamaFood ni descuentos o ajustes de la plataforma.';
+const CAMPOS_ORDEN_LIQUIDACION = ['id', 'creado_en', 'monto_neto'];
 
 function aNumero(valor) {
   const numero = Number(valor);
@@ -382,13 +376,10 @@ async function cancelarPedido(id, body, usuario) {
       fecha_cancelacion: fechaCancelacion,
     });
   } catch (error) {
-    if (!deliveryPropio.esColumnaInexistente(error)) {
-      throw db.persistenceError(
-        'Se repuso el stock pero no se pudo marcar el pedido como cancelado.',
-        error,
-      );
-    }
-    actualizado = await repository.update('pedidos', pedido.id, { estado: 'cancelado' });
+    throw db.persistenceError(
+      'Se repuso el stock pero no se pudo marcar el pedido como cancelado.',
+      error,
+    );
   }
 
   const dto = await pedidosDb.pedidoConDetalles(actualizado || { ...pedido, estado: 'cancelado' });
@@ -401,123 +392,96 @@ async function cancelarPedido(id, body, usuario) {
   };
 }
 
-function listLiquidacionesMemoria(query) {
-  const plataforma = query.plataforma
-    ? requiredEnum(query.plataforma, 'plataforma', PLATAFORMAS)
-    : null;
-  const desde = optionalDate(query.desde, 'desde');
-  const hasta = optionalDate(query.hasta, 'hasta');
+function valorOrdenLiquidacion(fila, campo) {
+  if (campo === 'id' || campo === 'monto_neto') {
+    return aNumero(fila[campo]);
+  }
+  const valor = fila[campo];
+  return valor === null || valor === undefined ? '' : String(valor);
+}
 
-  const data = store.state.liquidaciones
-    .filter((item) => !plataforma || item.plataforma === plataforma)
-    .filter((item) => !desde || item.fecha >= desde)
-    .filter((item) => !hasta || item.fecha <= hasta)
-    .sort((a, b) => b.id - a.id);
+function ordenarLiquidaciones(filas, campo, ascending) {
+  const direccion = ascending ? 1 : -1;
+  return [...filas].sort((izq, der) => {
+    const a = valorOrdenLiquidacion(izq, campo);
+    const b = valorOrdenLiquidacion(der, campo);
+    if (a < b) return -1 * direccion;
+    if (a > b) return 1 * direccion;
+    return aNumero(der.id) - aNumero(izq.id);
+  });
+}
 
-  return paginate(data, query);
+function liquidacionDTO(fila) {
+  return {
+    ...fila,
+    monto_bruto: db.round2(aNumero(fila.monto_bruto)),
+    comision: db.round2(aNumero(fila.comision)),
+    monto_neto: db.round2(aNumero(fila.monto_neto)),
+  };
+}
+
+function listLiquidacionesMemoria(filtros, query) {
+  const filas = (store.state.liquidaciones || [])
+    .filter((item) => !filtros.plataforma || item.plataforma === filtros.plataforma)
+    // Solape del periodo liquidado con el rango pedido.
+    .filter((item) => !filtros.desde || !item.hasta || item.hasta >= filtros.desde)
+    .filter((item) => !filtros.hasta || !item.desde || item.desde <= filtros.hasta);
+
+  const ordenadas = ordenarLiquidaciones(filas, filtros.sort, filtros.ascending);
+  const resultado = paginate(ordenadas, query);
+  return {
+    data: resultado.data.map(liquidacionDTO),
+    meta: {
+      ...resultado.meta,
+      origen: 'persistido',
+      filtros: {
+        plataforma: filtros.plataforma,
+        desde: filtros.desde,
+        hasta: filtros.hasta,
+        sort: `${filtros.sort}:${filtros.ascending ? 'asc' : 'desc'}`,
+      },
+    },
+  };
 }
 
 async function listLiquidacionesSupabase(filtros, query) {
   const { page, limit } = pageParams(query);
 
-  // PostgREST devuelve como máximo 1000 filas por página: se recorre en
-  // bloques de 1000 (tope de 10 000 pedidos) para no truncar el cálculo.
-  const TAMANO_BLOQUE = 1000;
-  const MAX_BLOQUES = 10;
-  const pedidos = [];
-
-  for (let bloque = 0; bloque < MAX_BLOQUES; bloque += 1) {
-    let consulta = repository
-      .table('pedidos')
-      .select('id, canal, fecha_pedido, total, comision_plataforma, estado')
-      .in('canal', filtros.plataforma ? [filtros.plataforma] : PLATAFORMAS)
-      .neq('estado', 'cancelado');
-
-    if (filtros.desde) {
-      consulta = consulta.gte('fecha_pedido', `${filtros.desde}T00:00:00`);
-    }
-    if (filtros.hasta) {
-      consulta = consulta.lte('fecha_pedido', `${filtros.hasta}T23:59:59.999`);
-    }
-
-    const inicio = bloque * TAMANO_BLOQUE;
-    const { data, error } = await consulta
-      .order('id', { ascending: true })
-      .range(inicio, inicio + TAMANO_BLOQUE - 1);
-    if (error) {
-      throw db.persistenceError('No se pudieron derivar las liquidaciones.', error);
-    }
-
-    const filasBloque = data || [];
-    pedidos.push(...filasBloque);
-    if (filasBloque.length < TAMANO_BLOQUE) {
-      break;
-    }
+  let consulta = repository.table('liquidaciones').select('*', { count: 'exact' });
+  if (filtros.plataforma) {
+    consulta = consulta.eq('plataforma', filtros.plataforma);
   }
-
-  const data = pedidos;
-
-  const tasas = {};
-  for (const plataforma of (filtros.plataforma ? [filtros.plataforma] : PLATAFORMAS)) {
-    tasas[plataforma] = await tasaComision(plataforma);
+  if (filtros.desde) {
+    consulta = consulta.or(`hasta.gte.${filtros.desde},hasta.is.null`);
   }
-
-  const acumulado = new Map();
-  for (const fila of data || []) {
-    const fecha = String(fila.fecha_pedido).slice(0, 10);
-    const clave = `${fila.canal}|${fecha}`;
-    const bruto = aNumero(fila.total);
-    const guardada = aNumero(fila.comision_plataforma);
-    const comision = guardada > 0
-      ? guardada
-      : db.round2(bruto * (tasas[fila.canal] || 0));
-
-    const actual = acumulado.get(clave) || {
-      plataforma: fila.canal,
-      fecha,
-      monto_bruto: 0,
-      comision: 0,
-      monto_neto: 0,
-      pedidos: 0,
-    };
-    actual.monto_bruto += bruto;
-    actual.comision += comision;
-    actual.monto_neto += bruto - comision;
-    actual.pedidos += 1;
-    acumulado.set(clave, actual);
+  if (filtros.hasta) {
+    consulta = consulta.or(`desde.lte.${filtros.hasta},desde.is.null`);
   }
+  consulta = consulta
+    .order(filtros.sort, { ascending: filtros.ascending })
+    .order('id', { ascending: false });
 
-  const filas = [...acumulado.values()]
-    .map((item) => ({
-      id: null,
-      plataforma: item.plataforma,
-      fecha: item.fecha,
-      monto_bruto: db.round2(item.monto_bruto),
-      comision: db.round2(item.comision),
-      monto_neto: db.round2(item.monto_neto),
-      referencia: 'derivado',
-      pedidos: item.pedidos,
-      origen: 'derivado',
-    }))
-    .sort((a, b) => (a.fecha === b.fecha
-      ? a.plataforma.localeCompare(b.plataforma)
-      : (a.fecha < b.fecha ? 1 : -1)));
-
-  const total = filas.length;
   const inicio = (page - 1) * limit;
+  const { data, error, count } = await consulta.range(inicio, inicio + limit - 1);
+  if (error) {
+    throw db.persistenceError('No se pudieron listar las liquidaciones.', error);
+  }
+
+  const filas = data || [];
+  const total = typeof count === 'number' ? count : filas.length;
   return {
-    data: filas.slice(inicio, inicio + limit),
+    data: filas.map(liquidacionDTO),
     meta: {
       page,
       limit,
       total,
       pages: total === 0 ? 0 : Math.ceil(total / limit),
-      origen: 'derivado',
-      limitacion: LIMITACION_LIQUIDACIONES,
+      origen: 'persistido',
       filtros: {
         plataforma: filtros.plataforma,
         desde: filtros.desde,
         hasta: filtros.hasta,
+        sort: `${filtros.sort}:${filtros.ascending ? 'asc' : 'desc'}`,
       },
     },
   };
@@ -529,63 +493,72 @@ async function listLiquidaciones(query = {}) {
     : null;
   const desde = optionalDate(query.desde, 'desde') || null;
   const hasta = optionalDate(query.hasta, 'hasta') || null;
+  const { campo, ascending } = parseSort(
+    query.sort,
+    CAMPOS_ORDEN_LIQUIDACION,
+    'creado_en:desc',
+    'sort',
+  );
+  const filtros = { plataforma, desde, hasta, sort: campo, ascending };
 
   if (db.isSupabase()) {
-    return listLiquidacionesSupabase({ plataforma, desde, hasta }, query);
+    return listLiquidacionesSupabase(filtros, query);
   }
-  return listLiquidacionesMemoria(query);
+  return listLiquidacionesMemoria(filtros, query);
 }
 
 async function crearLiquidacion(body, usuario) {
   const payload = requiredObject(body);
   const plataforma = requiredEnum(payload.plataforma, 'plataforma', PLATAFORMAS);
-  const fecha = optionalDate(payload.fecha, 'fecha') || db.today();
+  const desde = optionalDate(payload.desde, 'desde')
+    || optionalDate(payload.fecha, 'fecha')
+    || null;
+  const hasta = optionalDate(payload.hasta, 'hasta') || desde;
   const montoBruto = requiredNumber(payload.monto_bruto, 'monto_bruto', { min: 0.01 });
   const tasa = await tasaComision(plataforma);
   const comision = payload.comision === undefined
     ? db.round2(montoBruto * tasa)
     : requiredNumber(payload.comision, 'comision', { min: 0 });
-  const montoNeto = payload.monto_neto === undefined
-    ? db.round2(montoBruto - comision)
-    : requiredNumber(payload.monto_neto, 'monto_neto', { min: 0 });
+  const montoNeto = db.round2(montoBruto - comision);
+  const observacion = optionalString(
+    payload.observacion !== undefined ? payload.observacion : payload.referencia,
+    'observacion',
+    { max: 300 },
+  );
+
+  const fila = {
+    plataforma,
+    desde,
+    hasta,
+    monto_bruto: db.round2(montoBruto),
+    comision: db.round2(comision),
+    monto_neto: montoNeto,
+    estado: 'registrada',
+    observacion,
+    usuario_id: usuario.id,
+  };
 
   if (!db.isSupabase()) {
     const liquidacion = {
       id: store.nextId('liquidaciones'),
-      plataforma,
-      fecha,
-      monto_bruto: store.round2(montoBruto),
-      comision: store.round2(comision),
-      monto_neto: store.round2(montoNeto),
-      referencia: optionalString(payload.referencia, 'referencia', { max: 60 }),
-      usuario_id: usuario.id,
+      ...fila,
       creado_en: store.nowIso(),
     };
     store.state.liquidaciones.push(liquidacion);
-    return liquidacion;
+    return { ...liquidacionDTO(liquidacion), persistido: true, origen: 'persistido' };
   }
 
-  // Sin tabla no se puede persistir: se devuelve el cálculo derivado y se
-  // declara explícitamente que no quedó registrado.
-  return {
-    id: null,
-    plataforma,
-    fecha,
-    monto_bruto: db.round2(montoBruto),
-    comision: db.round2(comision),
-    monto_neto: db.round2(montoNeto),
-    referencia: optionalString(payload.referencia, 'referencia', { max: 60 }),
-    usuario_id: usuario.id,
-    creado_en: db.nowIso(),
-    origen: 'derivado',
-    persistido: false,
-    limitacion: LIMITACION_LIQUIDACIONES,
-  };
+  let creada;
+  try {
+    creada = await repository.insert('liquidaciones', fila);
+  } catch (error) {
+    throw db.persistenceError('No se pudo registrar la liquidación.', error);
+  }
+  return { ...liquidacionDTO(creada), persistido: true, origen: 'persistido' };
 }
 
 module.exports = {
   PLATAFORMAS,
-  LIMITACION_LIQUIDACIONES,
   tasaComision,
   listPedidos,
   crearPedido,

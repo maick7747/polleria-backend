@@ -60,12 +60,16 @@ async function loginSupabase(identifier, clave) {
     candidates.push(`${normalized}@fratellis.pe`);
   }
 
+  // Primero el correo (comportamiento histórico), luego el alias `usuario`.
   let user = null;
   for (const email of candidates) {
     user = await db.findOne('usuarios', { email });
     if (user) {
       break;
     }
+  }
+  if (!user) {
+    user = await db.findOne('usuarios', { usuario: normalized });
   }
 
   if (!user || !user.activo || !verifyPassword(clave, user.password_hash)) {

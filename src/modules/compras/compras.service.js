@@ -563,22 +563,6 @@ async function recibirCompra(id, body, usuario) {
   return getCompra(compra.id);
 }
 
-// La tabla `compras` del esquema v1 no tiene columnas de anulación. El motivo
-// se intenta persistir (compatible con una migración futura) y, si la columna
-// no existe, solo se guarda el estado; el motivo se devuelve en la respuesta.
-function esColumnaInexistente(error) {
-  if (!error) {
-    return false;
-  }
-  const codigo = error.code === undefined || error.code === null ? '' : String(error.code);
-  if (codigo === '42703') {
-    return true;
-  }
-  return /column .* does not exist|Could not find the '.*' column/i.test(
-    `${error.message || ''} ${error.details || ''} ${error.hint || ''}`,
-  );
-}
-
 async function cancelarCompra(id, body) {
   const compra = await db.findOrThrow('compras', parseId(id), 'Compra');
   const payload = body && typeof body === 'object' ? body : {};
@@ -597,23 +581,14 @@ async function cancelarCompra(id, body) {
   }
 
   const fechaCancelacion = db.nowIso();
-  const conMotivo = {
-    estado: 'cancelada',
-    motivo_cancelacion: motivo,
-    fecha_cancelacion: fechaCancelacion,
-  };
-
   try {
-    await repository.update('compras', compra.id, conMotivo);
+    await repository.update('compras', compra.id, {
+      estado: 'cancelada',
+      motivo_cancelacion: motivo,
+      fecha_cancelacion: fechaCancelacion,
+    });
   } catch (error) {
-    if (!esColumnaInexistente(error)) {
-      throw db.persistenceError('No se pudo cancelar la compra.', error);
-    }
-    try {
-      await repository.update('compras', compra.id, { estado: 'cancelada' });
-    } catch (respaldo) {
-      throw db.persistenceError('No se pudo cancelar la compra.', respaldo);
-    }
+    throw db.persistenceError('No se pudo cancelar la compra.', error);
   }
 
   const detalle = await getCompra(compra.id);

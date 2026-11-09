@@ -29,6 +29,27 @@ function aNumero(valor) {
   return Number.isFinite(numero) ? numero : 0;
 }
 
+function reembolsoDTO(fila) {
+  return {
+    id: fila.id,
+    devolucion_id: fila.devolucion_id,
+    metodo: fila.metodo,
+    monto: db.round2(aNumero(fila.monto)),
+    observacion: fila.observacion === undefined ? null : fila.observacion,
+    usuario_id: fila.usuario_id,
+    fecha: fila.fecha,
+  };
+}
+
+function detalleResolucion(payload) {
+  const texto = payload.detalle_resolucion !== undefined
+    ? payload.detalle_resolucion
+    : (payload.observacion !== undefined
+      ? payload.observacion
+      : (payload.detalle !== undefined ? payload.detalle : payload.motivo));
+  return optionalString(texto, 'detalle_resolucion', { max: 1000 });
+}
+
 function valorOrden(fila, campo) {
   if (campo === 'id' || campo === 'monto_reembolsado') {
     return aNumero(fila[campo]);
@@ -78,9 +99,9 @@ function enriquecerDevolucion(devolucion) {
     merma: merma
       ? { id: merma.id, estado: merma.estado, costo_estimado: db.round2(aNumero(merma.costo_estimado)) }
       : null,
-    reembolsos: store.state.reembolsos
+    reembolsos: store.state.devolucion_reembolsos
       .filter((item) => item.devolucion_id === devolucion.id)
-      .map((item) => ({ ...item, monto: db.round2(aNumero(item.monto)) })),
+      .map(reembolsoDTO),
   });
 }
 
@@ -93,10 +114,11 @@ async function porIds(tabla, ids, select) {
   return new Map((data || []).map((fila) => [fila.id, fila]));
 }
 
-// Enriquecimiento por lotes: pedidos, mermas, líneas, pagos y platillos
-// (este último depende de las líneas, por eso va en una segunda tanda).
+// Enriquecimiento por lotes: pedidos, mermas, líneas, platillos y el histórico
+// de reembolsos (devolucion_reembolsos), sin N+1.
 async function enriquecerDevolucionesSupabase(filas) {
-  const [pedidos, mermas, detalles, pagos] = await Promise.all([
+  const devolucionIds = filas.map((fila) => fila.id);
+  const [pedidos, mermas, detalles, reembolsos] = await Promise.all([
     porIds('pedidos', filas.map((fila) => fila.pedido_id), 'id, numero, total'),
     porIds('mermas', filas.map((fila) => fila.merma_id), 'id, estado, costo_estimado'),
     porIds(
@@ -104,7 +126,14 @@ async function enriquecerDevolucionesSupabase(filas) {
       filas.map((fila) => fila.pedido_detalle_id),
       'id, platillo_id',
     ),
-    porIds('pagos', filas.map((fila) => fila.pago_id), 'id, metodo, monto, fecha, usuario_id'),
+    devolucionIds.length
+      ? repository.list('devolucion_reembolsos', {
+        filters: { devolucion_id: devolucionIds },
+        orderBy: 'id',
+        ascending: true,
+        limit: 1000,
+      })
+      : { data: [] },
   ]);
 
   const platillos = await porIds(
@@ -113,12 +142,18 @@ async function enriquecerDevolucionesSupabase(filas) {
     'id, nombre',
   );
 
+  const reembolsosPorDevolucion = new Map();
+  for (const fila of reembolsos.data || []) {
+    const lista = reembolsosPorDevolucion.get(fila.devolucion_id) || [];
+    lista.push(fila);
+    reembolsosPorDevolucion.set(fila.devolucion_id, lista);
+  }
+
   return filas.map((fila) => {
     const pedido = pedidos.get(fila.pedido_id);
     const merma = fila.merma_id ? mermas.get(fila.merma_id) : null;
     const detalle = fila.pedido_detalle_id ? detalles.get(fila.pedido_detalle_id) : null;
     const platillo = detalle ? platillos.get(detalle.platillo_id) : null;
-    const pago = fila.pago_id ? pagos.get(fila.pago_id) : null;
 
     return devolucionDTO(fila, {
       pedido_numero: pedido ? pedido.numero : null,
@@ -131,21 +166,7 @@ async function enriquecerDevolucionesSupabase(filas) {
           costo_estimado: db.round2(aNumero(merma.costo_estimado)),
         }
         : null,
-      // El esquema no tiene tabla `reembolsos`: solo queda el último pago
-      // vinculado en devoluciones.pago_id (limitación declarada).
-      reembolsos: pago
-        ? [{
-          id: pago.id,
-          devolucion_id: fila.id,
-          pedido_id: fila.pedido_id,
-          metodo: pago.metodo,
-          monto: db.round2(aNumero(pago.monto)),
-          referencia: null,
-          estado: 'registrado',
-          fecha: pago.fecha,
-          usuario_id: pago.usuario_id,
-        }]
-        : [],
+      reembolsos: (reembolsosPorDevolucion.get(fila.id) || []).map(reembolsoDTO),
     });
   });
 }
@@ -297,6 +318,7 @@ async function crearDevolucion(body, usuario) {
     creada = await repository.insert('devoluciones', {
       ...base,
       pedido_detalle_id: detalleId,
+      registrado_por_id: usuario.id,
     });
   } catch (error) {
     throw db.persistenceError('No se pudo registrar la devolución.', error);
@@ -378,6 +400,7 @@ async function resolverDevolucionSupabase(devolucion, payload, usuario) {
       estado: 'rechazada',
       decidido_por_id: usuario.id,
       fecha_resolucion: db.nowIso(),
+      detalle_resolucion: detalleResolucion(payload),
     };
     let actualizada;
     try {
@@ -411,6 +434,7 @@ async function resolverDevolucionSupabase(devolucion, payload, usuario) {
     resolucion,
     decidido_por_id: usuario.id,
     fecha_resolucion: db.nowIso(),
+    detalle_resolucion: detalleResolucion(payload),
     monto_reembolsado: db.round2(monto),
     merma_id: merma ? merma.id : null,
   };
@@ -452,7 +476,7 @@ async function resolverDevolucion(id, body, usuario) {
     devolucion.estado = 'rechazada';
     devolucion.decidido_por_id = usuario.id;
     devolucion.fecha_resolucion = store.nowIso();
-    devolucion.detalle_resolucion = optionalString(payload.detalle, 'detalle', { max: 1000 });
+    devolucion.detalle_resolucion = detalleResolucion(payload);
     return enriquecerDevolucion(devolucion);
   }
 
@@ -461,9 +485,10 @@ async function resolverDevolucion(id, body, usuario) {
   devolucion.resolucion = resolucion;
   devolucion.decidido_por_id = usuario.id;
   devolucion.fecha_resolucion = store.nowIso();
+  devolucion.detalle_resolucion = detalleResolucion(payload);
   devolucion.monto_reembolsado = payload.monto_reembolsado === undefined
     ? 0
-    : requiredNumber(payload.monto_reembolsado, 'monto_reembolsado', { min: 0 });
+    : store.round2(requiredNumber(payload.monto_reembolsado, 'monto_reembolsado', { min: 0 }));
 
   if (resolucion !== 'corregir') {
     const merma = crearMermaPorDevolucion(devolucion, usuario);
@@ -516,11 +541,17 @@ function crearMermaPorDevolucion(devolucion, usuario) {
 async function registrarReembolsoSupabase(devolucion, payload, usuario) {
   const metodo = requiredEnum(payload.metodo, 'metodo', METODOS_REEMBOLSO);
   const monto = requiredNumber(payload.monto, 'monto', { min: 0.01 });
+  const observacion = optionalString(
+    payload.observacion !== undefined ? payload.observacion : payload.referencia,
+    'observacion',
+    { max: 200 },
+  );
+  const fecha = db.nowIso();
 
   let pago;
   try {
-    // El esquema no tiene tabla `reembolsos`: el reembolso se registra como un
-    // pago del pedido (chk_pago_sujeto exige exactamente pedido_id o cuenta_id).
+    // El reembolso impacta la caja como pago del pedido (comportamiento
+    // histórico); el histórico propio vive en devolucion_reembolsos.
     pago = await repository.insert('pagos', {
       pedido_id: devolucion.pedido_id,
       cuenta_id: null,
@@ -533,6 +564,25 @@ async function registrarReembolsoSupabase(devolucion, payload, usuario) {
     throw db.persistenceError('No se pudo registrar el reembolso.', error);
   }
 
+  let reembolso;
+  try {
+    reembolso = await repository.insert('devolucion_reembolsos', {
+      devolucion_id: devolucion.id,
+      metodo,
+      monto: db.round2(monto),
+      observacion,
+      usuario_id: usuario.id,
+      fecha,
+    });
+  } catch (error) {
+    try {
+      await repository.remove('pagos', pago.id);
+    } catch (compensacionError) {
+      error.compensacion = compensacionError.message;
+    }
+    throw db.persistenceError('No se pudo registrar el reembolso de la devolución.', error);
+  }
+
   const patch = {
     monto_reembolsado: db.round2(aNumero(devolucion.monto_reembolsado) + aNumero(monto)),
     pago_id: pago.id,
@@ -543,6 +593,7 @@ async function registrarReembolsoSupabase(devolucion, payload, usuario) {
     actualizada = await repository.update('devoluciones', devolucion.id, patch);
   } catch (error) {
     try {
+      await repository.remove('devolucion_reembolsos', reembolso.id);
       await repository.remove('pagos', pago.id);
     } catch (compensacionError) {
       error.compensacion = compensacionError.message;
@@ -552,17 +603,7 @@ async function registrarReembolsoSupabase(devolucion, payload, usuario) {
 
   const [dto] = await enriquecerDevolucionesSupabase([actualizada || { ...devolucion, ...patch }]);
   return {
-    reembolso: dto.reembolsos[0] || {
-      id: pago.id,
-      devolucion_id: devolucion.id,
-      pedido_id: devolucion.pedido_id,
-      metodo,
-      monto: db.round2(monto),
-      referencia: null,
-      estado: 'registrado',
-      fecha: pago.fecha,
-      usuario_id: usuario.id,
-    },
+    reembolso: reembolsoDTO(reembolso),
     devolucion: dto,
   };
 }
@@ -584,23 +625,28 @@ async function registrarReembolso(id, body, usuario) {
 
   const metodo = requiredEnum(payload.metodo, 'metodo', METODOS_REEMBOLSO);
   const monto = requiredNumber(payload.monto, 'monto', { min: 0.01 });
+  const observacion = optionalString(
+    payload.observacion !== undefined ? payload.observacion : payload.referencia,
+    'observacion',
+    { max: 200 },
+  );
 
   const reembolso = {
-    id: store.nextId('reembolsos'),
+    id: store.nextId('devolucion_reembolsos'),
     devolucion_id: devolucion.id,
-    pedido_id: devolucion.pedido_id,
     metodo,
     monto: store.round2(monto),
-    referencia: optionalString(payload.referencia, 'referencia', { max: 60 }),
-    estado: optionalString(payload.estado, 'estado', { max: 30 }) || 'registrado',
-    fecha: store.nowIso(),
+    observacion,
     usuario_id: usuario.id,
+    fecha: store.nowIso(),
   };
-  store.state.reembolsos.push(reembolso);
-  devolucion.monto_reembolsado = store.round2(devolucion.monto_reembolsado + reembolso.monto);
+  store.state.devolucion_reembolsos.push(reembolso);
+  devolucion.monto_reembolsado = store.round2(
+    aNumero(devolucion.monto_reembolsado) + reembolso.monto,
+  );
 
   return {
-    reembolso,
+    reembolso: reembolsoDTO(reembolso),
     devolucion: enriquecerDevolucion(devolucion),
   };
 }

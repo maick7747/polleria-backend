@@ -130,10 +130,15 @@ const state = {
   mermas: [],
   devoluciones: [],
   reembolsos: [],
+  devolucion_reembolsos: [],
   liquidaciones: [],
   activos: [],
   mantenimientos: [],
 };
+
+// Alias: la tabla `devolucion_reembolsos` y la colección histórica
+// `reembolsos` son la misma lista en memoria.
+state.devolucion_reembolsos = state.reembolsos;
 
 function nextId(collection) {
   const current = state.seq[collection] || 0;
@@ -830,9 +835,9 @@ function seed() {
   });
 
   state.gastos = [
-    { id: nextId('gastos'), fecha: today(), categoria: 'servicios_basicos', descripcion: 'Recibo de luz', monto: 45.5, metodo_pago: 'efectivo', descuenta_caja_chica: true, comprobante_url: null, usuario_id: 1, creado_en: isoMinutesAgo(200) },
-    { id: nextId('gastos'), fecha: today(), categoria: 'limpieza', descripcion: 'Detergente y desinfectante', monto: 30, metodo_pago: 'efectivo', descuenta_caja_chica: true, comprobante_url: null, usuario_id: 1, creado_en: isoMinutesAgo(180) },
-    { id: nextId('gastos'), fecha: today(), categoria: 'otros', descripcion: 'Movilidad de compras', monto: 12, metodo_pago: 'efectivo', descuenta_caja_chica: true, comprobante_url: null, usuario_id: 1, creado_en: isoMinutesAgo(160) },
+    { id: nextId('gastos'), fecha: today(), categoria: 'servicios_basicos', descripcion: 'Recibo de luz', monto: 45.5, metodo_pago: 'efectivo', descuenta_caja_chica: true, comprobante_url: null, usuario_id: 1, creado_en: isoMinutesAgo(200), actualizado_en: isoMinutesAgo(200) },
+    { id: nextId('gastos'), fecha: today(), categoria: 'limpieza', descripcion: 'Detergente y desinfectante', monto: 30, metodo_pago: 'efectivo', descuenta_caja_chica: true, comprobante_url: null, usuario_id: 1, creado_en: isoMinutesAgo(180), actualizado_en: isoMinutesAgo(180) },
+    { id: nextId('gastos'), fecha: today(), categoria: 'otros', descripcion: 'Movilidad de compras', monto: 12, metodo_pago: 'efectivo', descuenta_caja_chica: true, comprobante_url: null, usuario_id: 1, creado_en: isoMinutesAgo(160), actualizado_en: isoMinutesAgo(160) },
   ];
 
   state.mermas = [
@@ -853,12 +858,24 @@ function seed() {
   ];
 
   state.mantenimientos = [
-    { id: nextId('mantenimientos'), activo_id: 2, tipo: 'correctivo', fecha: today(), programada_para: null, descripcion: 'No enfría y hace ruido en el motor', costo_reparacion: 320, costo_reposicion: 2800, decision: null, estado: 'programado', usuario_id: 1, creado_en: isoMinutesAgo(120) },
-    { id: nextId('mantenimientos'), activo_id: 1, tipo: 'preventivo', fecha: null, programada_para: dateInDays(20), descripcion: 'Limpieza profunda y revisión de quemadores', costo_reparacion: 0, costo_reposicion: 0, decision: null, estado: 'programado', usuario_id: 1, creado_en: isoDaysAgo(10) },
+    { id: nextId('mantenimientos'), activo_id: 2, tipo: 'correctivo', fecha: today(), programada_para: null, descripcion: 'No enfría y hace ruido en el motor', costo_reparacion: 320, costo_reposicion: 2800, decision: null, estado: 'programado', usuario_id: 1, creado_en: isoMinutesAgo(120), fecha_autorizacion: null },
+    { id: nextId('mantenimientos'), activo_id: 1, tipo: 'preventivo', fecha: null, programada_para: dateInDays(20), descripcion: 'Limpieza profunda y revisión de quemadores', costo_reparacion: 0, costo_reposicion: 0, decision: null, estado: 'programado', usuario_id: 1, creado_en: isoDaysAgo(10), fecha_autorizacion: null },
   ];
 
   state.liquidaciones = [
-    { id: nextId('liquidaciones'), plataforma: 'rappi', fecha: isoDaysAgo(1).slice(0, 10), monto_bruto: 480, comision: 120, monto_neto: 360, referencia: 'DEP-2026-0001', creado_en: isoDaysAgo(1) },
+    {
+      id: nextId('liquidaciones'),
+      plataforma: 'rappi',
+      desde: isoDaysAgo(3).slice(0, 10),
+      hasta: isoDaysAgo(1).slice(0, 10),
+      monto_bruto: 480,
+      comision: 120,
+      monto_neto: 360,
+      estado: 'registrada',
+      observacion: null,
+      usuario_id: 1,
+      creado_en: isoDaysAgo(1),
+    },
   ];
 
   state.cuadres_caja.push({

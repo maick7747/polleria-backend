@@ -15,7 +15,8 @@ const TABLES = new Set([
   'categorias_platillo', 'platillos', 'fichas_tecnicas', 'insumos', 'fichas_tecnicas_detalle',
   'movimientos_inventario', 'proveedores', 'compras', 'compra_detalles', 'pagos_compras',
   'clientes', 'mesas', 'cuentas', 'pedidos', 'pedido_detalles', 'pagos',
-  'cuadres_caja', 'gastos', 'tipos_merma', 'mermas', 'devoluciones', 'activos', 'mantenimientos',
+  'cuadres_caja', 'gastos', 'tipos_merma', 'mermas', 'devoluciones',
+  'devolucion_reembolsos', 'liquidaciones', 'activos', 'mantenimientos',
 ]);
 
 let cachedClient = null;

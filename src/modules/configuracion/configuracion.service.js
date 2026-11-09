@@ -18,6 +18,7 @@ const {
 } = require('../../middleware/validate');
 
 const CAMPOS_ORDEN = ['id', 'nombre', 'email', 'usuario'];
+const USUARIO_RE = /^[a-zA-Z0-9._-]{3,50}$/;
 
 function aNumero(valor) {
   const numero = Number(valor);
@@ -48,7 +49,9 @@ function usuarioPublico(usuario, extras = {}) {
     id: usuario.id,
     nombre: usuario.nombre,
     email: usuario.email,
-    usuario: extras.usuario !== undefined ? extras.usuario : usuario.usuario,
+    usuario: extras.usuario !== undefined
+      ? extras.usuario
+      : (usuario.usuario || usuarioDerivado(usuario)),
     telefono: usuario.telefono,
     activo: usuario.activo,
     roles: extras.roles !== undefined ? extras.roles : (usuario.roles || []),
@@ -58,10 +61,26 @@ function usuarioPublico(usuario, extras = {}) {
   };
 }
 
-// El esquema `usuarios` no tiene columna `usuario`: se deriva del correo
-// (mismo criterio que usa el modo memoria al crear sin `usuario`).
+// Respaldo para filas antiguas sin columna `usuario` (la migración 009 la
+// rellena con el prefijo del correo).
 function usuarioDerivado(fila) {
   return String(fila.email || '').split('@')[0].toLowerCase();
+}
+
+// Normaliza y valida el alias de acceso. Si no viene, se deriva del correo.
+function normalizarUsuario(valor, email) {
+  const base = valor !== undefined && valor !== null && String(valor).trim() !== ''
+    ? String(valor).trim().toLowerCase()
+    : usuarioDerivado({ email });
+  if (!USUARIO_RE.test(base)) {
+    throw new AppError(
+      400,
+      'VALIDATION_ERROR',
+      'El campo "usuario" debe tener entre 3 y 50 caracteres y solo admite letras, números, punto, guion y guion bajo.',
+      [{ field: 'usuario', value: base }],
+    );
+  }
+  return base;
 }
 
 async function porIds(tabla, ids, select, orderBy = 'id') {
@@ -145,7 +164,6 @@ async function enriquecerUsuariosSupabase(filas) {
   return filas.map((fila) => {
     const refs = porUsuario.get(fila.id) || { roles: [], permisos: [] };
     return usuarioPublico(fila, {
-      usuario: usuarioDerivado(fila),
       roles: refs.roles,
       permisos: refs.permisos,
     });
@@ -199,21 +217,20 @@ async function listUsuariosSupabase(filtros, query) {
 
   let consulta = repository
     .table('usuarios')
-    .select('id, nombre, email, telefono, activo, ultimo_acceso, creado_en', { count: 'exact' });
+    .select('id, nombre, email, usuario, telefono, activo, ultimo_acceso, creado_en', { count: 'exact' });
   if (filtros.activo !== null) {
     consulta = consulta.eq('activo', filtros.activo);
   }
   if (filtros.q) {
     const seguro = filtros.q.replace(/[%,()]/g, ' ').trim();
     if (seguro) {
-      consulta = consulta.or(`nombre.ilike.%${seguro}%,email.ilike.%${seguro}%`);
+      consulta = consulta.or(
+        `nombre.ilike.%${seguro}%,email.ilike.%${seguro}%,usuario.ilike.%${seguro}%`,
+      );
     }
   }
-  // `usuario` no existe como columna: se ordena por email (su prefijo es la
-  // fuente del usuario derivado).
-  const campoOrden = filtros.sort === 'usuario' ? 'email' : filtros.sort;
   consulta = consulta
-    .order(campoOrden, { ascending: filtros.ascending })
+    .order(filtros.sort, { ascending: filtros.ascending })
     .order('id', { ascending: true });
 
   const inicio = (page - 1) * limit;
@@ -278,9 +295,7 @@ async function validarRolesSupabase(roles) {
 async function crearUsuario(body) {
   const payload = requiredObject(body);
   const email = requiredString(payload.email, 'email', { max: 150 }).toLowerCase();
-  const nombreUsuario = payload.usuario
-    ? requiredString(payload.usuario, 'usuario', { max: 60 }).toLowerCase()
-    : email.split('@')[0];
+  const nombreUsuario = normalizarUsuario(payload.usuario, email);
   const clave = requiredString(payload.clave || payload.password, 'clave', { max: 200 });
   const nombre = requiredString(payload.nombre, 'nombre', { max: 120 });
   const telefono = optionalString(payload.telefono, 'telefono', { max: 20 });
@@ -337,16 +352,33 @@ async function crearUsuario(body) {
     throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese correo.');
   }
 
+  const existenteUsuario = await repository.list('usuarios', {
+    select: 'id',
+    filters: { usuario: nombreUsuario },
+    limit: 1,
+  });
+  if (existenteUsuario.data && existenteUsuario.data.length > 0) {
+    throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese nombre de usuario.');
+  }
+
   let record;
   try {
     record = await repository.insert('usuarios', {
       nombre,
       email,
+      usuario: nombreUsuario,
       password_hash: hashPassword(clave),
       telefono,
       activo: true,
     });
   } catch (error) {
+    if (String(error && error.code) === '23505') {
+      const detalle = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`;
+      const mensaje = /usuario/i.test(detalle)
+        ? 'Ya existe un usuario con ese nombre de usuario.'
+        : 'Ya existe un usuario con ese correo.';
+      throw new AppError(409, 'CONFLICT', mensaje);
+    }
     throw db.persistenceError('No se pudo crear el usuario.', error);
   }
 
@@ -400,6 +432,31 @@ async function actualizarUsuario(id, body) {
   }
   if (payload.telefono !== undefined) {
     patch.telefono = optionalString(payload.telefono, 'telefono', { max: 20 });
+  }
+  if (payload.usuario !== undefined) {
+    patch.usuario = normalizarUsuario(payload.usuario, usuario.email);
+  }
+
+  if (patch.usuario !== undefined) {
+    if (!db.isSupabase()) {
+      const repetido = store.state.usuarios.some(
+        (item) => Number(item.id) !== Number(usuario.id)
+          && String(item.usuario || '').toLowerCase() === patch.usuario,
+      );
+      if (repetido) {
+        throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese nombre de usuario.');
+      }
+    } else {
+      const { data } = await repository.list('usuarios', {
+        select: 'id',
+        filters: { usuario: patch.usuario },
+        limit: 10,
+      });
+      const repetido = (data || []).some((fila) => Number(fila.id) !== Number(usuario.id));
+      if (repetido) {
+        throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese nombre de usuario.');
+      }
+    }
   }
 
   if (!db.isSupabase()) {
@@ -499,7 +556,6 @@ async function actualizarRoles(id, body) {
   }
 
   return usuarioPublico(usuario, {
-    usuario: usuarioDerivado(usuario),
     roles: nombres,
     permisos,
   });

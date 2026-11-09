@@ -107,7 +107,7 @@ function createPedidoRecord(options) {
     fecha_inicio_prep: null,
     fecha_listo: null,
     fecha_entrega: null,
-    estado_entrega: null,
+    estado_entrega: tipo_consumo === 'delivery' ? 'pendiente' : null,
     stock_descontado: false,
     creado_en: store.nowIso(),
   };

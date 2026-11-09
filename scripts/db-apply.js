@@ -24,6 +24,7 @@ const FILES = [
   'migrations/006_rpc_stock_total.sql',
   'migrations/007_rpc_ronda_envio.sql',
   'migrations/008_perf_listas_admin.sql',
+  'migrations/009_cierre_limitaciones.sql',
   'seed.sql',
 ];
 

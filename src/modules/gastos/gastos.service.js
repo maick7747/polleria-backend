@@ -61,6 +61,7 @@ function gastoDTO(gasto, nombreUsuario) {
   return {
     ...gasto,
     monto: db.round2(aNumero(gasto.monto)),
+    actualizado_en: gasto.actualizado_en === undefined ? null : gasto.actualizado_en,
     registrado_por: nombreUsuario === undefined ? null : nombreUsuario,
   };
 }
@@ -176,7 +177,13 @@ async function crearGasto(body, usuario) {
   };
 
   if (!db.isSupabase()) {
-    const registro = { id: store.nextId('gastos'), ...gasto, creado_en: store.nowIso() };
+    const ahora = store.nowIso();
+    const registro = {
+      id: store.nextId('gastos'),
+      ...gasto,
+      creado_en: ahora,
+      actualizado_en: ahora,
+    };
     store.state.gastos.push(registro);
     const registrado = store.find('usuarios', registro.usuario_id);
     return gastoDTO(registro, registrado ? registrado.nombre : null);
@@ -228,8 +235,7 @@ async function actualizarGasto(id, body) {
     return gastoDTO(gasto, usuario ? usuario.nombre : null);
   }
 
-  // `gastos` no tiene columna actualizado_en en el esquema v1: la marca de
-  // tiempo la aporta la base cuando exista el trigger; aquí no se inventa.
+  // `gastos.actualizado_en` lo rellena el trigger trg_gastos_updated_at.
   if (Object.keys(patch).length === 0) {
     // Sin campos no se emite un UPDATE vacío (PostgREST lo rechaza).
     const actual = await repository.getById('usuarios', gasto.usuario_id);
