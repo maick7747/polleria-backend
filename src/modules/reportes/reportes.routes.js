@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { requirePermiso } = require('../../middleware/roles');
+const { responderConEtag } = require('../../middleware/etag');
 const service = require('./reportes.service');
 
 const router = express.Router();
@@ -22,9 +23,10 @@ router.get('/tipos', permiso, (req, res) => {
   res.json({ data: service.TIPOS, meta: { total: service.TIPOS.length } });
 });
 
+// GET /api/reportes/:tipo — respuesta con ETag (las exportaciones van aparte).
 router.get('/:tipo', permiso, async (req, res, next) => {
   try {
-    res.json(await service.obtenerReporte(req.params.tipo, req.query));
+    responderConEtag(req, res, await service.obtenerReporte(req.params.tipo, req.query));
   } catch (error) {
     next(error);
   }

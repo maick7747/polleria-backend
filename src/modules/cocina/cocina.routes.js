@@ -2,17 +2,24 @@
 
 const express = require('express');
 const { requirePermiso } = require('../../middleware/roles');
+const { responderConEtag, estabilizarGenerado } = require('../../middleware/etag');
 const service = require('./cocina.service');
 
 const router = express.Router();
 const permisoKds = requirePermiso('cocina.kds');
 
+// GET /api/kds/pedidos (y /api/cocina/pedidos) — respuesta con ETag.
 router.get('/pedidos', permisoKds, async (req, res) => {
-  res.json(await service.listKds(req.query));
+  const payload = await service.listKds(req.query);
+  payload.meta = estabilizarGenerado(
+    `kds:${JSON.stringify(req.query)}`,
+    payload.meta,
+  );
+  responderConEtag(req, res, payload);
 });
 
 router.get('/comandas', permisoKds, async (req, res) => {
-  res.json(await service.listKds(req.query));
+  responderConEtag(req, res, await service.listKds(req.query));
 });
 
 router.get('/pedidos-listos', permisoKds, async (req, res) => {
@@ -34,7 +41,7 @@ router.get('/metricas', permisoKds, async (req, res) => {
 const listosRouter = express.Router();
 
 listosRouter.get('/pedidos-listos', requirePermiso('venta.registrar', 'cocina.kds'), async (req, res) => {
-  res.json(await service.pedidosListos(req.query));
+  responderConEtag(req, res, await service.pedidosListos(req.query));
 });
 
 module.exports = router;

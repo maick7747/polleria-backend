@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { requirePermiso } = require('../../middleware/roles');
+const { responderConEtag } = require('../../middleware/etag');
 const service = require('./inventario.service');
 
 const router = express.Router();
@@ -26,8 +27,11 @@ router.get('/alertas', permiso, manejar(async (req, res) => {
 }));
 
 // Debe declararse antes de cualquier ruta /:id para no colisionar.
+// GET /api/inventario/movimientos?tipo=&insumo_id=&desde=&hasta=&sort=&page=&limit=&after=<id>
+// `after` (entero >= 1) devuelve solo movimientos con id mayor al cursor.
+// Incluye meta.next_cursor y meta.has_more. Respuesta con ETag.
 router.get('/movimientos', permiso, manejar(async (req, res) => {
-  res.json(await service.listMovimientos(req.query));
+  responderConEtag(req, res, await service.listMovimientos(req.query));
 }));
 
 router.post('/verificar', permiso, manejar(async (req, res) => {

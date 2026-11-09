@@ -21,6 +21,9 @@ router.get('/tipos-merma', permiso, manejar(async (req, res) => {
   res.json(await service.listTipos());
 }));
 
+// GET /api/merma/mermas?estado=&tipo_merma_id=&desde=&hasta=&sort=&page=&limit=&after=<id>
+// `after` (entero >= 1) devuelve solo mermas con id mayor al cursor.
+// Incluye meta.next_cursor y meta.has_more.
 router.get('/mermas', permiso, manejar(async (req, res) => {
   res.json(await service.listMermas(req.query));
 }));

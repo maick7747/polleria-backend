@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { requirePermiso } = require('../../middleware/roles');
+const { responderConEtag, estabilizarGenerado } = require('../../middleware/etag');
 const service = require('./venta-local.service');
 const tablero = require('./tablero.service');
 
@@ -9,8 +10,11 @@ const router = express.Router();
 const permisoVenta = requirePermiso('venta.registrar');
 const permisoTablero = requirePermiso('venta.registrar', 'caja.cobrar', 'cocina.kds');
 
+// GET /api/venta-local/tablero -> { generado_en, meta:{resumen}, mesas[], cuentas[] }
+// Respuesta cacheable con ETag (304 si no cambió).
 router.get('/tablero', permisoTablero, async (req, res) => {
-  res.json(await tablero.obtenerTablero());
+  const payload = estabilizarGenerado('tablero', await tablero.obtenerTablero());
+  responderConEtag(req, res, payload);
 });
 
 router.get('/mesas', permisoVenta, async (req, res) => {
@@ -21,8 +25,11 @@ router.get('/mesas/:id', permisoVenta, async (req, res) => {
   res.json(await service.getMesa(req.params.id));
 });
 
+// GET /api/cuentas?estado=&page=&limit=&after=<id>
+// `after` (entero >= 1) devuelve solo cuentas con id mayor al cursor.
+// Incluye meta.next_cursor y meta.has_more.
 router.get('/cuentas', permisoVenta, async (req, res) => {
-  res.json(await service.listCuentas(req.query));
+  responderConEtag(req, res, await service.listCuentas(req.query));
 });
 
 router.post('/cuentas', permisoVenta, async (req, res) => {
@@ -37,8 +44,11 @@ router.patch('/cuentas/:id/cliente', permisoVenta, async (req, res) => {
   res.json(await service.attachCliente(req.params.id, req.body));
 });
 
+// GET /api/pedidos?estado=&canal=&desde=&hasta=&page=&limit=&after=<id>
+// `after` (entero >= 1) devuelve solo pedidos con id mayor al cursor.
+// Incluye meta.next_cursor y meta.has_more. Respuesta con ETag.
 router.get('/pedidos', permisoVenta, async (req, res) => {
-  res.json(await service.listPedidos(req.query));
+  responderConEtag(req, res, await service.listPedidos(req.query));
 });
 
 router.get('/pedidos/:id', permisoVenta, async (req, res) => {
@@ -61,8 +71,11 @@ router.post('/pedidos/:id/cancelar', permisoVenta, async (req, res) => {
   res.json(await service.cancelarPedido(req.params.id, req.body, req.usuario));
 });
 
+// GET /api/clientes?q=&documento=&page=&limit=&after=<id>
+// `after` (entero >= 1) devuelve solo clientes con id mayor al cursor.
+// Incluye meta.next_cursor y meta.has_more. Respuesta con ETag.
 router.get('/clientes', permisoVenta, async (req, res) => {
-  res.json(await service.listClientes(req.query));
+  responderConEtag(req, res, await service.listClientes(req.query));
 });
 
 router.post('/clientes', permisoVenta, async (req, res) => {
@@ -79,7 +92,7 @@ const clientesRouter = express.Router();
 
 clientesRouter.get('/', permisoVenta, async (req, res, next) => {
   try {
-    res.json(await service.listClientes(req.query));
+    responderConEtag(req, res, await service.listClientes(req.query));
   } catch (error) {
     next(error);
   }

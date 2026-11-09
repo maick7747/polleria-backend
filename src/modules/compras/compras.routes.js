@@ -31,6 +31,9 @@ router.post('/proveedores', permiso, manejar(async (req, res) => {
   res.status(201).json(await service.crearProveedor(req.body));
 }));
 
+// GET /api/compras?estado=&proveedor_id=&desde=&hasta=&q=&sort=&page=&limit=&after=<id>
+// `after` (entero >= 1) devuelve solo compras con id mayor al cursor.
+// Incluye meta.next_cursor y meta.has_more.
 router.get('/', permiso, manejar(async (req, res) => {
   res.json(await service.listCompras(req.query));
 }));

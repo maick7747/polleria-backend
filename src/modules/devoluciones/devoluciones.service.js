@@ -11,8 +11,10 @@ const {
   requiredEnum,
   optionalString,
   optionalDate,
+  optionalAfter,
   paginate,
   pageParams,
+  metaPaginada,
   parseId,
   parseSort,
 } = require('../../middleware/validate');
@@ -159,19 +161,21 @@ function filtrosDevolucion(query = {}) {
     'fecha_reporte:desc',
     'sort',
   );
-  return { estado, desde, hasta, q, sort: campo, ascending };
+  const after = optionalAfter(query);
+  return { estado, desde, hasta, q, sort: campo, ascending, after };
 }
 
 function listDevolucionesMemoria(filtros, query) {
   const buscado = filtros.q.toLowerCase();
   const filtradas = store.state.devoluciones
     .filter((item) => !filtros.estado || item.estado === filtros.estado)
+    .filter((item) => !filtros.after || Number(item.id) > filtros.after)
     .filter((item) => !filtros.desde || item.fecha_reporte.slice(0, 10) >= filtros.desde)
     .filter((item) => !filtros.hasta || item.fecha_reporte.slice(0, 10) <= filtros.hasta)
     .filter((item) => !buscado || String(item.motivo || '').toLowerCase().includes(buscado));
 
   const ordenadas = ordenar(filtradas, filtros.sort, filtros.ascending);
-  return paginate(ordenadas.map(enriquecerDevolucion), query);
+  return paginate(ordenadas.map(enriquecerDevolucion), query, { cursor: true });
 }
 
 function finExclusivo(fecha) {
@@ -184,6 +188,9 @@ async function listDevolucionesSupabase(filtros, query) {
   const { page, limit } = pageParams(query);
 
   let consulta = repository.table('devoluciones').select('*', { count: 'exact' });
+  if (filtros.after) {
+    consulta = consulta.gt('id', filtros.after);
+  }
   if (filtros.estado) {
     consulta = consulta.eq('estado', filtros.estado);
   }
@@ -208,9 +215,10 @@ async function listDevolucionesSupabase(filtros, query) {
 
   const filas = data || [];
   const total = typeof count === 'number' ? count : filas.length;
+  const salida = await enriquecerDevolucionesSupabase(filas);
   return {
-    data: await enriquecerDevolucionesSupabase(filas),
-    meta: { page, limit, total, pages: total === 0 ? 0 : Math.ceil(total / limit) },
+    data: salida,
+    meta: metaPaginada({ page, limit, total }, salida, inicio),
   };
 }
 

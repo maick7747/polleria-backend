@@ -12,8 +12,10 @@ const {
   requiredEnum,
   optionalString,
   optionalDate,
+  optionalAfter,
   paginate,
   pageParams,
+  metaPaginada,
   parseId,
   parseSort,
 } = require('../../middleware/validate');
@@ -126,7 +128,8 @@ function filtrosActivo(query = {}) {
   const estado = query.estado ? requiredEnum(query.estado, 'estado', ESTADOS) : null;
   const q = query.q ? String(query.q).trim() : '';
   const { campo, ascending } = parseSort(query.sort, CAMPOS_ORDEN, 'id:desc', 'sort');
-  return { categoria, estado, q, sort: campo, ascending };
+  const after = optionalAfter(query);
+  return { categoria, estado, q, sort: campo, ascending, after };
 }
 
 function listActivosMemoria(filtros, query) {
@@ -134,17 +137,21 @@ function listActivosMemoria(filtros, query) {
   const filtrados = store.state.activos
     .filter((activo) => !filtros.categoria || activo.categoria === filtros.categoria)
     .filter((activo) => !filtros.estado || activo.estado === filtros.estado)
+    .filter((activo) => !filtros.after || Number(activo.id) > filtros.after)
     .filter((activo) => !buscado || String(activo.nombre).toLowerCase().includes(buscado));
 
   const ordenados = ordenar(filtrados, filtros.sort, filtros.ascending);
   const data = ordenados.map((activo) => activoDTO(activo, mantenimientosDe(activo.id)));
-  return paginate(data, query);
+  return paginate(data, query, { cursor: true });
 }
 
 async function listActivosSupabase(filtros, query) {
   const { page, limit } = pageParams(query);
 
   let consulta = repository.table('activos').select('*', { count: 'exact' });
+  if (filtros.after) {
+    consulta = consulta.gt('id', filtros.after);
+  }
   if (filtros.categoria) {
     consulta = consulta.eq('categoria', filtros.categoria);
   }
@@ -167,9 +174,10 @@ async function listActivosSupabase(filtros, query) {
   const filas = data || [];
   const mapa = await mantenimientosPorActivo(filas.map((activo) => activo.id));
   const total = typeof count === 'number' ? count : filas.length;
+  const salida = filas.map((activo) => activoDTO(activo, mapa.get(activo.id) || []));
   return {
-    data: filas.map((activo) => activoDTO(activo, mapa.get(activo.id) || [])),
-    meta: { page, limit, total, pages: total === 0 ? 0 : Math.ceil(total / limit) },
+    data: salida,
+    meta: metaPaginada({ page, limit, total }, salida, inicio),
   };
 }
 

@@ -38,6 +38,7 @@ app.use(compression());
 app.use(
   cors({
     origin: env.corsOrigin === '*' ? '*' : env.corsOrigin.split(',').map((item) => item.trim()),
+    exposedHeaders: ['ETag', 'X-Request-Id', 'Retry-After'],
   }),
 );
 app.use(express.json({ limit: '1mb' }));

@@ -12,8 +12,10 @@ const {
   requiredEnum,
   optionalNumber,
   optionalDate,
+  optionalAfter,
   pageParams,
   paginate,
+  metaPaginada,
   parseId,
 } = require('../../middleware/validate');
 const pedidos = require('../../lib/pedidos');
@@ -380,14 +382,16 @@ async function listCuentas(query = {}) {
   const estado = query.estado
     ? requiredEnum(query.estado, 'estado', ['abierta', 'cobrada', 'cancelada'])
     : null;
+  const after = optionalAfter(query);
 
   if (!db.isSupabase()) {
     const data = store.state.cuentas
       .filter((cuenta) => !estado || cuenta.estado === estado)
+      .filter((cuenta) => !after || Number(cuenta.id) > after)
       .sort((a, b) => b.id - a.id)
       .map((cuenta) => resumenCuentaSync(cuenta));
 
-    return paginate(data, query);
+    return paginate(data, query, { cursor: true });
   }
 
   const { data } = await repository.list('cuentas', {
@@ -395,12 +399,13 @@ async function listCuentas(query = {}) {
     orderBy: 'id',
     ascending: false,
     limit: 100,
+    after,
   });
   const nombres = await nombresDeUsuarios(data.map((cuenta) => cuenta.usuario_apertura_id));
   const mapped = await Promise.all(
     data.map((cuenta) => resumenCuenta(cuenta, nombres)),
   );
-  return paginate(mapped, query);
+  return paginate(mapped, query, { cursor: true });
 }
 
 function resumenCuentaSync(cuenta) {
@@ -744,17 +749,19 @@ async function listPedidos(query = {}) {
     : null;
   const desde = optionalDate(query.desde, 'desde');
   const hasta = optionalDate(query.hasta, 'hasta');
+  const after = optionalAfter(query);
 
   if (!db.isSupabase()) {
     const data = store.state.pedidos
-      .filter((pedido) => (!estado || pedido.estado === estado))
-      .filter((pedido) => (!canal || pedido.canal === canal))
-      .filter((pedido) => (!desde || pedido.fecha_pedido.slice(0, 10) >= desde))
-      .filter((pedido) => (!hasta || pedido.fecha_pedido.slice(0, 10) <= hasta))
+      .filter((pedido) => !estado || pedido.estado === estado)
+      .filter((pedido) => !canal || pedido.canal === canal)
+      .filter((pedido) => !desde || pedido.fecha_pedido.slice(0, 10) >= desde)
+      .filter((pedido) => !hasta || pedido.fecha_pedido.slice(0, 10) <= hasta)
+      .filter((pedido) => !after || Number(pedido.id) > after)
       .sort((a, b) => b.id - a.id)
       .map((pedido) => pedidos.pedidoConDetalles(pedido));
 
-    return paginate(data, query);
+    return paginate(data, query, { cursor: true });
   }
 
   const filters = {};
@@ -781,6 +788,7 @@ async function listPedidos(query = {}) {
     ascending: false,
     page,
     limit,
+    after,
   });
 
   const mapped = await Promise.all(data.map((pedido) => pedidosDb.pedidoConDetalles(pedido)));
@@ -1124,10 +1132,12 @@ function clienteDTO(cliente) {
 async function listClientes(query = {}) {
   const documento = query.documento ? String(query.documento).trim() : '';
   const q = query.q ? String(query.q).trim() : '';
+  const after = optionalAfter(query);
 
   if (!db.isSupabase()) {
     const buscado = q.toLowerCase();
     const data = store.state.clientes
+      .filter((cliente) => !after || Number(cliente.id) > after)
       .filter((cliente) => !documento || String(cliente.numero_documento || '').includes(documento))
       .filter(
         (cliente) =>
@@ -1138,7 +1148,7 @@ async function listClientes(query = {}) {
       .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)))
       .map(clienteDTO);
 
-    return paginate(data, query);
+    return paginate(data, query, { cursor: true });
   }
 
   const { page, limit } = pageParams(query);
@@ -1146,6 +1156,9 @@ async function listClientes(query = {}) {
     .table('clientes')
     .select(CAMPOS_CLIENTE.join(', '), { count: 'exact' });
 
+  if (after) {
+    consulta = consulta.gt('id', after);
+  }
   if (documento) {
     consulta = consulta.ilike('numero_documento', `%${documento}%`);
   }
@@ -1169,14 +1182,10 @@ async function listClientes(query = {}) {
   }
 
   const total = typeof count === 'number' ? count : (data || []).length;
+  const filas = (data || []).map(clienteDTO);
   return {
-    data: (data || []).map(clienteDTO),
-    meta: {
-      page,
-      limit,
-      total,
-      pages: total === 0 ? 0 : Math.ceil(total / limit),
-    },
+    data: filas,
+    meta: metaPaginada({ page, limit, total }, filas, inicio),
   };
 }
 

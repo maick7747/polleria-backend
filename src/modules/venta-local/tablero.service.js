@@ -93,11 +93,24 @@ function normalizarPedido(pedido, extras = {}) {
 
 function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta) {
   const porMesa = new Map(cuentasAbiertas.map((cuenta) => [cuenta.mesa_id, cuenta]));
+  const mesasActivas = mesas.filter((mesa) => mesa.activa !== false);
+  const mesasOcupadas = mesasActivas.filter((mesa) => porMesa.has(mesa.id)).length;
+  const totalAbierto = Math.round(
+    cuentasAbiertas.reduce((suma, cuenta) => suma + num(cuenta.total), 0) * 100,
+  ) / 100;
 
   return {
     generado_en: new Date().toISOString(),
-    mesas: mesas
-      .filter((mesa) => mesa.activa !== false)
+    meta: {
+      resumen: {
+        mesas_total: mesasActivas.length,
+        mesas_ocupadas: mesasOcupadas,
+        mesas_libres: mesasActivas.length - mesasOcupadas,
+        cuentas_abiertas: cuentasAbiertas.length,
+        total_abierto: totalAbierto,
+      },
+    },
+    mesas: mesasActivas
       .sort((a, b) => Number(a.numero) - Number(b.numero))
       .map((mesa) => {
         const cuenta = porMesa.get(mesa.id) || null;

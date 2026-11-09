@@ -13,8 +13,10 @@ const {
   requiredArray,
   optionalString,
   optionalDate,
+  optionalAfter,
   paginate,
   pageParams,
+  metaPaginada,
   parseId,
   parseSort,
 } = require('../../middleware/validate');
@@ -129,7 +131,8 @@ function filtrosCompras(query = {}) {
   const hasta = optionalDate(query.hasta, 'hasta');
   const q = query.q ? String(query.q).trim() : '';
   const { campo, ascending } = parseSort(query.sort, CAMPOS_ORDEN_COMPRA, 'id:desc', 'sort');
-  return { estado, proveedorId, desde, hasta, q, sort: campo, ascending };
+  const after = optionalAfter(query);
+  return { estado, proveedorId, desde, hasta, q, sort: campo, ascending, after };
 }
 
 function listComprasMemoria(filtros, query) {
@@ -137,6 +140,7 @@ function listComprasMemoria(filtros, query) {
   const filtradas = store.state.compras
     .filter((compra) => !filtros.estado || compra.estado === filtros.estado)
     .filter((compra) => !filtros.proveedorId || compra.proveedor_id === filtros.proveedorId)
+    .filter((compra) => !filtros.after || Number(compra.id) > filtros.after)
     .filter((compra) => !filtros.desde || compra.fecha >= filtros.desde)
     .filter((compra) => !filtros.hasta || compra.fecha <= filtros.hasta)
     .filter((compra) => {
@@ -152,7 +156,7 @@ function listComprasMemoria(filtros, query) {
     });
 
   const ordenadas = ordenarCompras(filtradas, filtros.sort, filtros.ascending);
-  const resultado = paginate(ordenadas, query);
+  const resultado = paginate(ordenadas, query, { cursor: true });
 
   const conteo = new Map();
   for (const detalle of store.state.compra_detalles) {
@@ -195,6 +199,9 @@ async function listComprasSupabase(filtros, query) {
   }
 
   let consulta = repository.table('compras').select('*', { count: 'exact' });
+  if (filtros.after) {
+    consulta = consulta.gt('id', filtros.after);
+  }
   if (filtros.estado) {
     consulta = consulta.eq('estado', filtros.estado);
   }
@@ -252,19 +259,15 @@ async function listComprasSupabase(filtros, query) {
   }
 
   const total = typeof count === 'number' ? count : compras.length;
+  const salida = compras.map((compra) => ({
+    ...compra,
+    total: db.round2(aNumero(compra.total)),
+    proveedor: proveedorResumen(proveedoresPorId.get(compra.proveedor_id)),
+    items: itemsPorCompra.get(compra.id) || 0,
+  }));
   return {
-    data: compras.map((compra) => ({
-      ...compra,
-      total: db.round2(aNumero(compra.total)),
-      proveedor: proveedorResumen(proveedoresPorId.get(compra.proveedor_id)),
-      items: itemsPorCompra.get(compra.id) || 0,
-    })),
-    meta: {
-      page,
-      limit,
-      total,
-      pages: total === 0 ? 0 : Math.ceil(total / limit),
-    },
+    data: salida,
+    meta: metaPaginada({ page, limit, total }, salida, inicio),
   };
 }
 

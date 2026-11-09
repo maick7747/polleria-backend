@@ -118,13 +118,43 @@ function pageParams(query = {}) {
   return { page, limit };
 }
 
-function paginate(items, query = {}) {
+// Cursor ascendente por id. Devuelve undefined si no se envió `after` y lanza
+// 400 VALIDATION_ERROR si no es un entero >= 1.
+function optionalAfter(query = {}) {
+  return optionalInt(query.after, 'after', { min: 1 });
+}
+
+// `options.cursor` agrega next_cursor (id de la última fila de la página) y
+// has_more (start + data.length < total). page/limit/total/pages no cambian.
+function paginate(items, query = {}, options = {}) {
   const { page, limit } = pageParams(query);
   const total = items.length;
   const start = (page - 1) * limit;
+  const data = items.slice(start, start + limit);
+  const meta = { page, limit, total, pages: Math.ceil(total / limit) };
+  if (options.cursor) {
+    Object.assign(meta, cursorMeta(data, start, total));
+  }
+  return { data, meta };
+}
+
+// Meta de una página ya cortada (camino Supabase con PostgREST).
+function cursorMeta(data, start, total) {
+  const filas = Array.isArray(data) ? data : [];
+  const ultima = filas.length > 0 ? filas[filas.length - 1] : null;
   return {
-    data: items.slice(start, start + limit),
-    meta: { page, limit, total, pages: Math.ceil(total / limit) },
+    next_cursor: ultima && ultima.id !== undefined ? ultima.id : null,
+    has_more: start + filas.length < total,
+  };
+}
+
+function metaPaginada({ page, limit, total }, data, start) {
+  return {
+    page,
+    limit,
+    total,
+    pages: total === 0 ? 0 : Math.ceil(total / limit),
+    ...cursorMeta(data, start, total),
   };
 }
 
@@ -158,4 +188,7 @@ module.exports = {
   paginate,
   parseSort,
   optionalDate,
+  optionalAfter,
+  cursorMeta,
+  metaPaginada,
 };

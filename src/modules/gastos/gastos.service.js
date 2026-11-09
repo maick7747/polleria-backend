@@ -10,8 +10,10 @@ const {
   requiredEnum,
   optionalString,
   optionalDate,
+  optionalAfter,
   paginate,
   pageParams,
+  metaPaginada,
   parseId,
   parseSort,
 } = require('../../middleware/validate');
@@ -69,13 +71,15 @@ function filtrosGastos(query = {}) {
   const hasta = optionalDate(query.hasta, 'hasta');
   const q = query.q ? String(query.q).trim() : '';
   const { campo, ascending } = parseSort(query.sort, CAMPOS_ORDEN_GASTO, 'fecha:desc', 'sort');
-  return { categoria, desde, hasta, q, sort: campo, ascending };
+  const after = optionalAfter(query);
+  return { categoria, desde, hasta, q, sort: campo, ascending, after };
 }
 
 function listGastosMemoria(filtros, query) {
   const buscado = filtros.q.toLowerCase();
   const filtrados = store.state.gastos
     .filter((gasto) => !filtros.categoria || gasto.categoria === filtros.categoria)
+    .filter((gasto) => !filtros.after || Number(gasto.id) > filtros.after)
     .filter((gasto) => !filtros.desde || gasto.fecha >= filtros.desde)
     .filter((gasto) => !filtros.hasta || gasto.fecha <= filtros.hasta)
     .filter(
@@ -89,13 +93,16 @@ function listGastosMemoria(filtros, query) {
     return gastoDTO(gasto, usuario ? usuario.nombre : null);
   });
 
-  return paginate(data, query);
+  return paginate(data, query, { cursor: true });
 }
 
 async function listGastosSupabase(filtros, query) {
   const { page, limit } = pageParams(query);
 
   let consulta = repository.table('gastos').select('*', { count: 'exact' });
+  if (filtros.after) {
+    consulta = consulta.gt('id', filtros.after);
+  }
   if (filtros.categoria) {
     consulta = consulta.eq('categoria', filtros.categoria);
   }
@@ -126,9 +133,10 @@ async function listGastosSupabase(filtros, query) {
   const nombres = new Map((usuarios.data || []).map((usuario) => [usuario.id, usuario.nombre]));
 
   const total = typeof count === 'number' ? count : gastos.length;
+  const salida = gastos.map((gasto) => gastoDTO(gasto, nombres.get(gasto.usuario_id) || null));
   return {
-    data: gastos.map((gasto) => gastoDTO(gasto, nombres.get(gasto.usuario_id) || null)),
-    meta: { page, limit, total, pages: total === 0 ? 0 : Math.ceil(total / limit) },
+    data: salida,
+    meta: metaPaginada({ page, limit, total }, salida, inicio),
   };
 }
 

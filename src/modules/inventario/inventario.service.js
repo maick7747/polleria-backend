@@ -11,8 +11,10 @@ const {
   requiredArray,
   optionalString,
   optionalDate,
+  optionalAfter,
   paginate,
   pageParams,
+  metaPaginada,
   parseId,
   parseSort,
 } = require('../../middleware/validate');
@@ -200,13 +202,15 @@ function filtrosMovimiento(query = {}) {
     'fecha:desc',
     'sort',
   );
-  return { tipo, insumoId, desde, hasta, sort: campo, ascending };
+  const after = optionalAfter(query);
+  return { tipo, insumoId, desde, hasta, sort: campo, ascending, after };
 }
 
 function listMovimientosMemoria(filtros, query) {
   const filtrados = store.state.movimientos_inventario
     .filter((movimiento) => !filtros.tipo || movimiento.tipo === filtros.tipo)
     .filter((movimiento) => !filtros.insumoId || movimiento.insumo_id === filtros.insumoId)
+    .filter((movimiento) => !filtros.after || Number(movimiento.id) > filtros.after)
     .filter((movimiento) => !filtros.desde || movimiento.fecha.slice(0, 10) >= filtros.desde)
     .filter((movimiento) => !filtros.hasta || movimiento.fecha.slice(0, 10) <= filtros.hasta);
 
@@ -218,7 +222,7 @@ function listMovimientosMemoria(filtros, query) {
       store.find('usuarios', movimiento.usuario_id),
     ),
   );
-  return paginate(data, query);
+  return paginate(data, query, { cursor: true });
 }
 
 async function listMovimientosSupabase(filtros, query) {
@@ -227,6 +231,9 @@ async function listMovimientosSupabase(filtros, query) {
   let consulta = repository
     .table('movimientos_inventario')
     .select('*', { count: 'exact' });
+  if (filtros.after) {
+    consulta = consulta.gt('id', filtros.after);
+  }
   if (filtros.tipo) {
     consulta = consulta.eq('tipo', filtros.tipo);
   }
@@ -272,15 +279,16 @@ async function listMovimientosSupabase(filtros, query) {
   const nombresUsuario = new Map((usuarios.data || []).map((usuario) => [usuario.id, usuario]));
 
   const total = typeof count === 'number' ? count : filas.length;
-  return {
-    data: filas.map((movimiento) =>
-      movimientoDTO(
-        movimiento,
-        nombresInsumo.get(movimiento.insumo_id),
-        nombresUsuario.get(movimiento.usuario_id),
-      ),
+  const salida = filas.map((movimiento) =>
+    movimientoDTO(
+      movimiento,
+      nombresInsumo.get(movimiento.insumo_id),
+      nombresUsuario.get(movimiento.usuario_id),
     ),
-    meta: { page, limit, total, pages: total === 0 ? 0 : Math.ceil(total / limit) },
+  );
+  return {
+    data: salida,
+    meta: metaPaginada({ page, limit, total }, salida, inicio),
   };
 }
 

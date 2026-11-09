@@ -48,6 +48,9 @@ async function request(base, method, endpoint, options = {}) {
   if (options.token) {
     headers.Authorization = `Bearer ${options.token}`;
   }
+  if (options.headers) {
+    Object.assign(headers, options.headers);
+  }
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(options.body);
@@ -60,7 +63,7 @@ async function request(base, method, endpoint, options = {}) {
   } catch (error) {
     parsed = text;
   }
-  return { status: response.status, ok: response.ok, body: parsed };
+  return { status: response.status, ok: response.ok, body: parsed, headers: response.headers };
 }
 
 function stop(child) {
@@ -184,6 +187,41 @@ function resumen(value) {
       if (!response.ok) {
         throw new Error(`${name} devolvió ${response.status}: ${JSON.stringify(response.body)}`);
       }
+    }
+
+    // ---- Fase 3: ETag/304 en tablero y resumen agregado ----
+    const tablero1 = await request(base, 'GET', '/venta-local/tablero', { token });
+    const tableroEtag = tablero1.headers.get('etag');
+    const tablero2 = tableroEtag
+      ? await request(base, 'GET', '/venta-local/tablero', {
+        token,
+        headers: { 'If-None-Match': tableroEtag },
+      })
+      : { status: 0, body: null };
+    const resumenTablero = tablero1.body && tablero1.body.meta ? tablero1.body.meta.resumen : null;
+    const tableroEtagOk =
+      tablero1.status === 200 &&
+      typeof tableroEtag === 'string' &&
+      tableroEtag.startsWith('W/"') &&
+      tablero2.status === 304 &&
+      resumenTablero &&
+      typeof resumenTablero.mesas_total === 'number' &&
+      typeof resumenTablero.mesas_ocupadas === 'number' &&
+      typeof resumenTablero.mesas_libres === 'number' &&
+      typeof resumenTablero.cuentas_abiertas === 'number' &&
+      typeof resumenTablero.total_abierto === 'number' &&
+      resumenTablero.mesas_total === resumenTablero.mesas_ocupadas + resumenTablero.mesas_libres;
+    results.push({
+      name: 'GET /api/venta-local/tablero (ETag/304 + resumen)',
+      status: tableroEtagOk ? 304 : 500,
+      detail: tableroEtagOk
+        ? `${tableroEtag.slice(0, 14)}… · 1ª=${tablero1.status}, 2ª=${tablero2.status} · mesas ${resumenTablero.mesas_ocupadas}/${resumenTablero.mesas_total}`
+        : `1ª=${tablero1.status}, etag=${tableroEtag}, 2ª=${tablero2.status}, resumenTablero=${JSON.stringify(resumenTablero)}`,
+    });
+    if (!tableroEtagOk) {
+      throw new Error(
+        `El tablero no respondió con ETag/304 ni meta.resumen: ${JSON.stringify({ status1: tablero1.status, etag: tableroEtag, status2: tablero2.status, resumen: resumenTablero })}`,
+      );
     }
 
     const inventarioPagina = await request(base, 'GET', '/inventario?page=1&limit=5', { token });
@@ -919,6 +957,60 @@ function resumen(value) {
     });
     if (!movimientosFiltroOk) {
       throw new Error('El filtro tipo del historial global no se aplicó.');
+    }
+
+    // ---- Fase 3: cursor `after` en movimientos ----
+    // Se usa un cursor por debajo de la página actual para que queden filas
+    // nuevas y has_more sea significativo.
+    const idsMovimientos = movimientos.body.data.map((movimiento) => Number(movimiento.id));
+    const cursorBase = Math.max(1, Math.min(...idsMovimientos) - 2);
+    const movimientosCursor = await request(
+      base,
+      'GET',
+      `/inventario/movimientos?limit=2&after=${cursorBase}`,
+      { token },
+    );
+    const cursorMeta = movimientosCursor.body && movimientosCursor.body.meta;
+    const movimientosCursorOk =
+      movimientosCursor.ok &&
+      Array.isArray(movimientosCursor.body.data) &&
+      movimientosCursor.body.data.length <= 2 &&
+      movimientosCursor.body.data.every((movimiento) => Number(movimiento.id) > cursorBase) &&
+      cursorMeta &&
+      Object.prototype.hasOwnProperty.call(cursorMeta, 'next_cursor') &&
+      typeof cursorMeta.has_more === 'boolean' &&
+      (cursorMeta.next_cursor === null || Number(cursorMeta.next_cursor) > cursorBase);
+    results.push({
+      name: 'GET /api/inventario/movimientos?after= (cursor)',
+      status: movimientosCursorOk ? 200 : 500,
+      detail: movimientosCursorOk
+        ? `after=${cursorBase} · ${movimientosCursor.body.data.length} filas · next_cursor=${cursorMeta.next_cursor} · has_more=${cursorMeta.has_more}`
+        : JSON.stringify(movimientosCursor.body),
+    });
+    if (!movimientosCursorOk) {
+      throw new Error(`El cursor de movimientos no devolvió next_cursor/has_more: ${JSON.stringify(movimientosCursor.body)}`);
+    }
+
+    const cursorInvalido = await request(
+      base,
+      'GET',
+      '/inventario/movimientos?after=abc',
+      { token },
+    );
+    const cursorInvalidoOk =
+      cursorInvalido.status === 400 &&
+      cursorInvalido.body?.error?.code === 'VALIDATION_ERROR' &&
+      Array.isArray(cursorInvalido.body.error.details) &&
+      cursorInvalido.body.error.details.some((detalle) => detalle.field === 'after');
+    results.push({
+      name: 'GET /api/inventario/movimientos?after=abc (400)',
+      status: cursorInvalidoOk ? 400 : 500,
+      detail: cursorInvalidoOk
+        ? `code=${cursorInvalido.body.error.code} · field=after`
+        : JSON.stringify(cursorInvalido.body),
+    });
+    if (!cursorInvalidoOk) {
+      throw new Error('Un after inválido no devolvió 400 VALIDATION_ERROR con field=after.');
     }
 
     // ---- Fase 2: reportes con rango, clientes paginados y cuadre histórico ----

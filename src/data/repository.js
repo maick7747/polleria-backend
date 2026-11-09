@@ -186,6 +186,29 @@ function clone(row) {
   return row ? { ...row } : null;
 }
 
+// Cursor ascendente por id: `after` numérico agrega `id > after` respetando
+// los filtros ya aplicados. Se usa para polling incremental (solo lo nuevo).
+function normalizarCursor(after) {
+  if (after === undefined || after === null || after === '') {
+    return null;
+  }
+  const numero = Number(after);
+  return Number.isFinite(numero) ? Math.floor(numero) : null;
+}
+
+function metaLista(page, limit, total, data, start) {
+  const filas = Array.isArray(data) ? data : [];
+  const ultima = filas.length > 0 ? filas[filas.length - 1] : null;
+  return {
+    page,
+    limit,
+    total,
+    pages: total === 0 ? 0 : Math.ceil(total / limit),
+    next_cursor: ultima && ultima.id !== undefined ? ultima.id : null,
+    has_more: start + filas.length < total,
+  };
+}
+
 // ---------------------------------------------------------------------
 // Filtros para Supabase
 // ---------------------------------------------------------------------
@@ -241,28 +264,32 @@ async function list(table, options = {}) {
     ascending = true,
     page = 1,
     limit = 20,
+    after,
   } = options;
 
   const currentPage = normalizePage(page);
   const pageSize = clampLimit(limit);
+  const cursor = normalizarCursor(after);
 
   if (mode() === 'memory') {
-    const filtered = memoryRows(table).filter((row) => matchesFilters(row, filters));
+    let filtered = memoryRows(table).filter((row) => matchesFilters(row, filters));
+    if (cursor !== null) {
+      filtered = filtered.filter((row) => Number(row.id) > cursor);
+    }
     const sorted = sortRows(filtered, orderBy, ascending);
     const start = (currentPage - 1) * pageSize;
+    const filas = sorted.slice(start, start + pageSize).map(clone);
     return {
-      data: sorted.slice(start, start + pageSize).map(clone),
-      meta: {
-        page: currentPage,
-        limit: pageSize,
-        total: sorted.length,
-        pages: sorted.length === 0 ? 0 : Math.ceil(sorted.length / pageSize),
-      },
+      data: filas,
+      meta: metaLista(currentPage, pageSize, sorted.length, filas, start),
     };
   }
 
   let query = getClient().from(table).select(select, { count: 'exact' });
   query = applySupabaseFilters(query, filters);
+  if (cursor !== null) {
+    query = query.gt('id', cursor);
+  }
   query = query.order(orderBy, { ascending });
 
   const start = (currentPage - 1) * pageSize;
@@ -274,12 +301,7 @@ async function list(table, options = {}) {
   const total = typeof count === 'number' ? count : data.length;
   return {
     data,
-    meta: {
-      page: currentPage,
-      limit: pageSize,
-      total,
-      pages: total === 0 ? 0 : Math.ceil(total / pageSize),
-    },
+    meta: metaLista(currentPage, pageSize, total, data, start),
   };
 }
 

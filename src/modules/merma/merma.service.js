@@ -12,8 +12,10 @@ const {
   requiredEnum,
   optionalString,
   optionalDate,
+  optionalAfter,
   paginate,
   pageParams,
+  metaPaginada,
   parseId,
   parseSort,
 } = require('../../middleware/validate');
@@ -161,24 +163,29 @@ function filtrosMerma(query = {}) {
   const desde = optionalDate(query.desde, 'desde');
   const hasta = optionalDate(query.hasta, 'hasta');
   const { campo, ascending } = parseSort(query.sort, CAMPOS_ORDEN, 'id:desc', 'sort');
-  return { estado, tipoId, desde, hasta, sort: campo, ascending };
+  const after = optionalAfter(query);
+  return { estado, tipoId, desde, hasta, sort: campo, ascending, after };
 }
 
 function listMermasMemoria(filtros, query) {
   const filtradas = store.state.mermas
     .filter((merma) => !filtros.estado || merma.estado === filtros.estado)
     .filter((merma) => !filtros.tipoId || merma.tipo_merma_id === filtros.tipoId)
+    .filter((merma) => !filtros.after || Number(merma.id) > filtros.after)
     .filter((merma) => !filtros.desde || merma.fecha >= filtros.desde)
     .filter((merma) => !filtros.hasta || merma.fecha <= filtros.hasta);
 
   const ordenadas = ordenar(filtradas, filtros.sort, filtros.ascending);
-  return paginate(ordenadas.map(enriquecerMerma), query);
+  return paginate(ordenadas.map(enriquecerMerma), query, { cursor: true });
 }
 
 async function listMermasSupabase(filtros, query) {
   const { page, limit } = pageParams(query);
 
   let consulta = repository.table('mermas').select('*', { count: 'exact' });
+  if (filtros.after) {
+    consulta = consulta.gt('id', filtros.after);
+  }
   if (filtros.estado) {
     consulta = consulta.eq('estado', filtros.estado);
   }
@@ -203,9 +210,10 @@ async function listMermasSupabase(filtros, query) {
 
   const filas = data || [];
   const total = typeof count === 'number' ? count : filas.length;
+  const salida = await enriquecerMermasSupabase(filas);
   return {
-    data: await enriquecerMermasSupabase(filas),
-    meta: { page, limit, total, pages: total === 0 ? 0 : Math.ceil(total / limit) },
+    data: salida,
+    meta: metaPaginada({ page, limit, total }, salida, inicio),
   };
 }
 

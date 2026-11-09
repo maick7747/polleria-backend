@@ -21,6 +21,9 @@ router.get('/alertas', permiso, manejar(async (req, res) => {
   res.json(await service.alertasActivos(req.query));
 }));
 
+// GET /api/activos?categoria=&estado=&q=&sort=&page=&limit=&after=<id>
+// `after` (entero >= 1) devuelve solo activos con id mayor al cursor.
+// Incluye meta.next_cursor y meta.has_more.
 router.get('/', permiso, manejar(async (req, res) => {
   res.json(await service.listActivos(req.query));
 }));
