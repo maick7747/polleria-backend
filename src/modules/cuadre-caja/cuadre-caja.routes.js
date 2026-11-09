@@ -58,6 +58,15 @@ router.post('/:id/cierre', permiso, async (req, res) => {
   res.json(await service.cierre(req.params.id, req.body, req.usuario));
 });
 
+// POST /api/cuadre-caja/:id/reabrir — reabre el cuadre del día (o el de ayer).
+router.post('/:id/reabrir', permiso, async (req, res, next) => {
+  try {
+    res.json(await service.reabrir(req.params.id, req.body, req.usuario));
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/:id/resumen', permiso, async (req, res) => {
   res.json(await service.resumenCuadre(req.params.id));
 });

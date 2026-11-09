@@ -27,6 +27,7 @@ const FILES = [
   'migrations/009_cierre_limitaciones.sql',
   'migrations/010_realtime.sql',
   'migrations/011_realtime_anon_policy.sql',
+  'migrations/012_cuadre_reapertura.sql',
   'seed.sql',
 ];
 

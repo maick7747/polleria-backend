@@ -266,6 +266,9 @@ function resumen(value) {
       dashboard1.body.kpis &&
       typeof dashboard1.body.kpis.ventas === 'number' &&
       typeof dashboard1.body.kpis.pedidos === 'number' &&
+      typeof dashboard1.body.ventas_ayer === 'number' &&
+      Array.isArray(dashboard1.body.serie_semana) &&
+      dashboard1.body.serie_semana.length === 7 &&
       typeof dashboardEtag === 'string' &&
       dashboardEtag.startsWith('W/"') &&
       dashboard2.status === 304 &&
@@ -274,12 +277,40 @@ function resumen(value) {
       name: 'GET /api/dashboard (ETag/304 + KPIs)',
       status: dashboardOk ? 304 : 500,
       detail: dashboardOk
-        ? `${dashboardEtag.slice(0, 14)}… · 1ª=${dashboard1.status}, 2ª=${dashboard2.status} · ventas=S/ ${dashboard1.body.kpis.ventas} · pedidos=${dashboard1.body.kpis.pedidos}`
+        ? `${dashboardEtag.slice(0, 14)}… · 1ª=${dashboard1.status}, 2ª=${dashboard2.status} · ventas=S/ ${dashboard1.body.kpis.ventas} · ayer=S/ ${dashboard1.body.ventas_ayer} · serie=${dashboard1.body.serie_semana.length}d`
         : `1ª=${dashboard1.status}, etag=${dashboardEtag}, 2ª=${dashboard2.status}, body=${JSON.stringify(dashboard1.body)}`,
     });
     if (!dashboardOk) {
       throw new Error(
         `El dashboard no respondió con KPIs numéricos y ETag/304: ${JSON.stringify({ status1: dashboard1.status, etag: dashboardEtag, status2: dashboard2.status, body: dashboard1.body })}`,
+      );
+    }
+
+    // ---- Pagos del día (caja/comandas): lista + totales por método ----
+    const pagosDia = await request(base, 'GET', '/pagos', { token });
+    const pagosDiaOk =
+      pagosDia.status === 200 &&
+      pagosDia.body &&
+      Array.isArray(pagosDia.body.data) &&
+      typeof pagosDia.body.total === 'number' &&
+      typeof pagosDia.body.cantidad === 'number' &&
+      Array.isArray(pagosDia.body.por_metodo) &&
+      pagosDia.body.data.every(
+        (pago) =>
+          typeof pago.monto === 'number' &&
+          typeof pago.metodo === 'string' &&
+          typeof pago.fecha === 'string',
+      );
+    results.push({
+      name: 'GET /api/pagos (pagos del día)',
+      status: pagosDiaOk ? 200 : 500,
+      detail: pagosDiaOk
+        ? `fecha=${pagosDia.body.fecha} · cantidad=${pagosDia.body.cantidad} · total=S/ ${pagosDia.body.total} · métodos=${pagosDia.body.por_metodo.length}`
+        : JSON.stringify(pagosDia.body),
+    });
+    if (!pagosDiaOk) {
+      throw new Error(
+        `GET /api/pagos no devolvió data/total/por_metodo válidos: ${JSON.stringify(pagosDia.body)}`,
       );
     }
 
@@ -384,6 +415,55 @@ function resumen(value) {
         })),
       },
     });
+
+    // ---- Catálogos de fichas: categorías e ingredientes (DB-aware) ----
+    const categoriasPlatillo = await request(base, 'GET', '/categorias-platillo', { token });
+    const categoriasOk =
+      categoriasPlatillo.ok &&
+      Array.isArray(categoriasPlatillo.body.data) &&
+      categoriasPlatillo.body.data.length > 0 &&
+      categoriasPlatillo.body.data.every(
+        (categoria) => typeof categoria.id === 'number' && typeof categoria.nombre === 'string',
+      ) &&
+      typeof categoriasPlatillo.body.meta?.total === 'number';
+    results.push({
+      name: 'GET /api/categorias-platillo',
+      status: categoriasOk ? 200 : 500,
+      detail: categoriasOk
+        ? `${categoriasPlatillo.body.data.length} categorías · ${categoriasPlatillo.body.data[0].nombre}`
+        : JSON.stringify(categoriasPlatillo.body),
+    });
+    if (!categoriasOk) {
+      throw new Error(
+        `Las categorías de platillo no devolvieron [{id, nombre}]: ${JSON.stringify(categoriasPlatillo.body)}`,
+      );
+    }
+
+    const ingredientesFicha = await request(base, 'GET', '/ingredientes?limit=10', { token });
+    const ingredientesOk =
+      ingredientesFicha.ok &&
+      Array.isArray(ingredientesFicha.body.data) &&
+      ingredientesFicha.body.data.length > 0 &&
+      ingredientesFicha.body.data.every(
+        (item) =>
+          typeof item.id === 'number' &&
+          typeof item.nombre === 'string' &&
+          typeof item.stock_actual === 'number' &&
+          typeof item.costo_promedio === 'number',
+      ) &&
+      typeof ingredientesFicha.body.meta?.total === 'number';
+    results.push({
+      name: 'GET /api/ingredientes (stock/costo)',
+      status: ingredientesOk ? 200 : 500,
+      detail: ingredientesOk
+        ? `${ingredientesFicha.body.data.length}/${ingredientesFicha.body.meta.total} insumos · stock/costo numéricos`
+        : JSON.stringify(ingredientesFicha.body),
+    });
+    if (!ingredientesOk) {
+      throw new Error(
+        `Los ingredientes no devolvieron stock_actual/costo_promedio numéricos: ${JSON.stringify(ingredientesFicha.body)}`,
+      );
+    }
 
     const listosPagina = await request(
       base,
@@ -1669,6 +1749,102 @@ function resumen(value) {
     });
     if (!cuadrePdfOk) {
       throw new Error('El PDF del cuadre de caja no se generó correctamente.');
+    }
+
+    // ---- Reapertura del cuadre del día (fecha UNIQUE + POST /reabrir) ----
+    let cuadrePrueba = await request(base, 'GET', '/cuadre-caja', { token });
+    let cuadrePruebaId = cuadrePrueba.body && cuadrePrueba.body.id;
+
+    if (!cuadrePruebaId) {
+      const abierto = await request(base, 'POST', '/cuadre-caja/apertura', {
+        token,
+        body: { fondo_inicial: 0 },
+      });
+      cuadrePruebaId = abierto.body && abierto.body.id;
+      cuadrePrueba = abierto;
+    }
+
+    if (cuadrePrueba.body && cuadrePrueba.body.estado !== 'cerrada' && cuadrePruebaId) {
+      const esperado = Number(
+        cuadrePrueba.body.resumen ? cuadrePrueba.body.resumen.monto_esperado : 0,
+      );
+      const cierrePrevio = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/cierre`, {
+        token,
+        body: {
+          efectivo_contado: esperado,
+          pagos_digitales: 0,
+          observaciones: 'Cierre previo a la prueba de reapertura',
+        },
+      });
+      if (!cierrePrevio.ok) {
+        throw new Error(`No se pudo cerrar el cuadre para probar la reapertura: ${JSON.stringify(cierrePrevio.body)}`);
+      }
+    }
+
+    const reapertura = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+      token,
+      body: { motivo: 'Prueba de reapertura' },
+    });
+    const reaperturaOk =
+      reapertura.status === 200 &&
+      reapertura.body &&
+      reapertura.body.estado === 'abierta' &&
+      reapertura.body.motivo_reapertura === 'Prueba de reapertura' &&
+      Boolean(reapertura.body.reabierto_en) &&
+      reapertura.body.fecha_cierre === null &&
+      reapertura.body.diferencia === null;
+    results.push({
+      name: 'POST /api/cuadre-caja/:id/reabrir',
+      status: reaperturaOk ? 200 : 500,
+      detail: reaperturaOk
+        ? `cuadre=${reapertura.body.id} · estado=${reapertura.body.estado} · motivo=${reapertura.body.motivo_reapertura}`
+        : JSON.stringify(reapertura.body),
+    });
+    if (!reaperturaOk) {
+      throw new Error(
+        `La reapertura del cuadre no devolvió estado 'abierta' con motivo_reapertura: ${JSON.stringify(reapertura.body)}`,
+      );
+    }
+
+    const reaperturaDoble = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+      token,
+      body: { motivo: 'Prueba de reapertura' },
+    });
+    const reaperturaDobleOk =
+      reaperturaDoble.status === 409 && reaperturaDoble.body.error.code === 'CUADRE_NO_CERRADO';
+    results.push({
+      name: 'POST /api/cuadre-caja/:id/reabrir (409)',
+      status: reaperturaDobleOk ? 409 : 500,
+      detail: reaperturaDobleOk
+        ? `code=${reaperturaDoble.body.error.code}`
+        : JSON.stringify(reaperturaDoble.body),
+    });
+    if (!reaperturaDobleOk) {
+      throw new Error(
+        `Reabrir un cuadre ya abierto debía devolver 409 CUADRE_NO_CERRADO: ${JSON.stringify(reaperturaDoble.body)}`,
+      );
+    }
+
+    const reaperturaMotivoCorto = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+      token,
+      body: { motivo: 'abc' },
+    });
+    const reaperturaMotivoCortoOk =
+      reaperturaMotivoCorto.status === 422 &&
+      reaperturaMotivoCorto.body.error.code === 'VALIDATION_ERROR' &&
+      Array.isArray(reaperturaMotivoCorto.body.error.details) &&
+      reaperturaMotivoCorto.body.error.details.some((detalle) => detalle.field === 'motivo');
+    results.push({
+      name: 'POST /api/cuadre-caja/:id/reabrir (motivo corto 422)',
+      status: reaperturaMotivoCortoOk ? 422 : 500,
+      detail: reaperturaMotivoCortoOk
+        ? `code=${reaperturaMotivoCorto.body.error.code} · field=motivo`
+        : JSON.stringify(reaperturaMotivoCorto.body),
+    });
+    if (!reaperturaMotivoCortoOk) {
+      throw new Error(
+        `Un motivo de reapertura demasiado corto debía devolver 422 VALIDATION_ERROR: ${JSON.stringify(reaperturaMotivoCorto.body)}`,
+      );
     }
 
     console.log('\nSmoke test Fratelli\'s');

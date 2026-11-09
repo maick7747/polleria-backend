@@ -65,10 +65,32 @@ function fichaConDetalle(platilloId) {
   };
 }
 
-function listCategorias() {
+function normalizarCategoria(categoria) {
+  return { id: Number(categoria.id), nombre: categoria.nombre };
+}
+
+async function listCategorias() {
+  if (db.isSupabase()) {
+    let filas;
+    try {
+      const { data } = await repository.list('categorias_platillo', {
+        select: 'id, nombre, orden',
+        filters: { activo: true },
+        orderBy: 'orden',
+        ascending: true,
+        limit: 100,
+      });
+      filas = data;
+    } catch (error) {
+      throw db.persistenceError('No se pudieron leer las categorías de platillo.', error);
+    }
+    return { data: filas.map(normalizarCategoria), meta: { total: filas.length } };
+  }
+
   const data = store.state.categorias_platillo
     .filter((categoria) => categoria.activo)
-    .sort((a, b) => a.orden - b.orden);
+    .sort((a, b) => a.orden - b.orden)
+    .map(normalizarCategoria);
   return { data, meta: { total: data.length } };
 }
 
@@ -212,13 +234,18 @@ async function enriquecerPlatillos(platillos) {
   });
 }
 
-async function listPlatillosDesdeDb(query, filtros) {
+async function platillosEnriquecidosDb(filtros = {}) {
   const { data: platillos } = await repository.list('platillos', {
+    filters: filtros,
     orderBy: 'nombre',
     ascending: true,
     limit: 500,
   });
-  const normalizados = await enriquecerPlatillos(platillos);
+  return enriquecerPlatillos(platillos);
+}
+
+async function listPlatillosDesdeDb(query, filtros) {
+  const normalizados = await platillosEnriquecidosDb();
 
   const resultado = paginate(aplicarFiltrosPlatillos(normalizados, filtros), {
     ...query,
@@ -574,29 +601,70 @@ async function guardarFicha(platilloId, body) {
   return platilloConDetalleDb(platillo.id);
 }
 
-function listIngredientes(query = {}) {
+function normalizarIngrediente(insumo) {
+  return {
+    id: Number(insumo.id),
+    codigo: insumo.codigo,
+    nombre: insumo.nombre,
+    categoria: insumo.categoria,
+    unidad_medida: insumo.unidad_medida,
+    costo_promedio: Number(insumo.costo_promedio),
+    stock_actual: Number(insumo.stock_actual),
+  };
+}
+
+function filtrarIngredientes(data, { categoria, q }) {
+  return data
+    .filter((insumo) => !categoria || insumo.categoria === categoria)
+    .filter((insumo) => !q
+      || String(insumo.nombre || '').toLowerCase().includes(q)
+      || String(insumo.codigo || '').toLowerCase().includes(q))
+    .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+}
+
+async function listIngredientes(query = {}) {
   const categoria = query.categoria ? String(query.categoria) : null;
   const q = query.q ? String(query.q).trim().toLowerCase() : '';
 
-  const data = store.state.insumos
-    .filter((insumo) => insumo.activo)
-    .filter((insumo) => !categoria || insumo.categoria === categoria)
-    .filter((insumo) => !q || insumo.nombre.toLowerCase().includes(q) || insumo.codigo.toLowerCase().includes(q))
-    .sort((a, b) => a.nombre.localeCompare(b.nombre))
-    .map((insumo) => ({
-      id: insumo.id,
-      codigo: insumo.codigo,
-      nombre: insumo.nombre,
-      categoria: insumo.categoria,
-      unidad_medida: insumo.unidad_medida,
-      costo_promedio: insumo.costo_promedio,
-      stock_actual: insumo.stock_actual,
-    }));
+  if (db.isSupabase()) {
+    let filas;
+    try {
+      const { data } = await repository.list('insumos', {
+        filters: { activo: true },
+        orderBy: 'nombre',
+        ascending: true,
+        limit: 1000,
+      });
+      filas = data;
+    } catch (error) {
+      throw db.persistenceError('No se pudieron leer los ingredientes activos.', error);
+    }
+    const data = filtrarIngredientes(filas.map(normalizarIngrediente), { categoria, q });
+    return paginate(data, query);
+  }
+
+  const data = filtrarIngredientes(
+    store.state.insumos.filter((insumo) => insumo.activo).map(normalizarIngrediente),
+    { categoria, q },
+  );
 
   return paginate(data, query);
 }
 
-function listFichas(query = {}) {
+async function listFichas(query = {}) {
+  if (db.isSupabase()) {
+    let normalizados;
+    try {
+      normalizados = await platillosEnriquecidosDb({ activo: true });
+    } catch (error) {
+      throw db.persistenceError('No se pudieron leer las fichas técnicas.', error);
+    }
+    const data = normalizados.sort(
+      (a, b) => String(a.nombre).localeCompare(String(b.nombre)),
+    );
+    return paginate(data, query);
+  }
+
   const data = store.state.platillos
     .filter((platillo) => platillo.activo)
     .map((platillo) => fichaConDetalle(platillo.id))

@@ -16,40 +16,62 @@ const {
 
 const CAMPOS_ORDEN_CUADRE = ['fecha', 'id', 'diferencia'];
 
+// PostgREST devuelve como máximo 1000 filas por consulta: los totales del
+// cuadre se leen por lotes hasta agotar (sin topes silenciosos).
+const LIMITE_FILAS = 1000;
+
 function rangoDia(fecha) {
   const start = new Date(`${fecha}T00:00:00-05:00`);
   const end = new Date(start.getTime() + 86400000);
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
+async function leerTodas(crearConsulta, mensaje) {
+  const filas = [];
+  for (let inicio = 0; ; inicio += LIMITE_FILAS) {
+    const { data, error } = await crearConsulta().range(inicio, inicio + LIMITE_FILAS - 1);
+    if (error) {
+      throw db.persistenceError(mensaje, error);
+    }
+    const lote = data || [];
+    filas.push(...lote);
+    if (lote.length < LIMITE_FILAS) {
+      break;
+    }
+  }
+  return filas;
+}
+
 async function totalPagosSupabase(fecha) {
   const { start, end } = rangoDia(fecha);
-  const { data, error } = await repository
-    .table('pagos')
-    .select('monto')
-    .gte('fecha', start)
-    .lt('fecha', end);
-  if (error) {
-    throw db.persistenceError('No se pudieron leer los pagos del día.', error);
-  }
+  const pagos = await leerTodas(
+    () => repository
+      .table('pagos')
+      .select('monto')
+      .gte('fecha', start)
+      .lt('fecha', end)
+      .order('id', { ascending: true }),
+    'No se pudieron leer los pagos del día.',
+  );
   return store.round2(
-    data.reduce((sum, pago) => sum + Number(pago.monto), 0),
+    pagos.reduce((sum, pago) => sum + Number(pago.monto), 0),
   );
 }
 
 async function totalReembolsosSupabase(fecha) {
   const { start, end } = rangoDia(fecha);
-  const { data, error } = await repository
-    .table('devoluciones')
-    .select('monto_reembolsado')
-    .eq('estado', 'aceptada')
-    .gte('fecha_resolucion', start)
-    .lt('fecha_resolucion', end);
-  if (error) {
-    throw db.persistenceError('No se pudieron leer los reembolsos del día.', error);
-  }
+  const reembolsos = await leerTodas(
+    () => repository
+      .table('devoluciones')
+      .select('monto_reembolsado')
+      .eq('estado', 'aceptada')
+      .gte('fecha_resolucion', start)
+      .lt('fecha_resolucion', end)
+      .order('id', { ascending: true }),
+    'No se pudieron leer los reembolsos del día.',
+  );
   return store.round2(
-    data.reduce((sum, devolucion) => sum + Number(devolucion.monto_reembolsado || 0), 0),
+    reembolsos.reduce((sum, devolucion) => sum + Number(devolucion.monto_reembolsado || 0), 0),
   );
 }
 
@@ -75,14 +97,16 @@ async function resumenDe(fecha, fondoInicial, efectivoContado = null, pagosDigit
         .reduce((sum, item) => sum + item.monto, 0),
     );
   } else {
-    const [ventas, { data: gastos }, reembolsos] = await Promise.all([
+    const [ventas, gastos, reembolsos] = await Promise.all([
       totalPagosSupabase(fecha),
-      repository.list('gastos', {
-        filters: { fecha },
-        orderBy: 'id',
-        ascending: true,
-        limit: 100,
-      }),
+      leerTodas(
+        () => repository
+          .table('gastos')
+          .select('monto')
+          .eq('fecha', fecha)
+          .order('id', { ascending: true }),
+        'No se pudieron leer los gastos del día.',
+      ),
       totalReembolsosSupabase(fecha),
     ]);
     totalVentas = ventas;
@@ -124,6 +148,9 @@ function normalizarCuadre(cuadre, resumen) {
     pagos_digitales: Number(cuadre.pagos_digitales),
     total_real: cuadre.total_real === null ? null : Number(cuadre.total_real),
     diferencia: cuadre.diferencia === null ? null : Number(cuadre.diferencia),
+    reabierto_en: cuadre.reabierto_en === undefined ? null : cuadre.reabierto_en,
+    usuario_reabre_id: cuadre.usuario_reabre_id === undefined ? null : cuadre.usuario_reabre_id,
+    motivo_reapertura: cuadre.motivo_reapertura === undefined ? null : cuadre.motivo_reapertura,
     resumen,
   };
 }
@@ -330,6 +357,85 @@ async function resumenCuadre(id) {
   return (await getCuadrePorId(id)).resumen;
 }
 
+// Hora local (Lima) en formato HH:mm a partir de un ISO generado por store/db.
+function horaCorta(iso) {
+  const match = String(iso || '').match(/T(\d{2}):(\d{2})/);
+  return match ? `${match[1]}:${match[2]}` : '';
+}
+
+function validarReapertura(cuadre, hoy, ayer) {
+  if (cuadre.estado !== 'cerrada') {
+    throw new AppError(409, 'CUADRE_NO_CERRADO', 'Solo se puede reabrir un cuadre cerrado.');
+  }
+  const fecha = String(cuadre.fecha).slice(0, 10);
+  if (fecha !== hoy && fecha !== ayer) {
+    throw new AppError(
+      422,
+      'CUADRE_FUERA_DE_RANGO',
+      'Solo se puede reabrir el cuadre del día (o el de ayer si el cierre pasó la medianoche).',
+    );
+  }
+}
+
+function patchReapertura(cuadre, motivo, ahora, usuario) {
+  const previas = cuadre.observaciones ? String(cuadre.observaciones).trim() : '';
+  const nota = `Reabierto ${horaCorta(ahora)} · ${motivo}`.slice(0, 300);
+  // La nota de reapertura siempre se conserva completa; lo que se recorta
+  // (si hace falta) es el texto previo para no pasar de 300 caracteres.
+  const espacio = Math.max(0, 300 - nota.length - 3);
+  const recorte = previas.slice(0, espacio).trim();
+  const observaciones = recorte ? `${recorte} | ${nota}` : nota;
+
+  return {
+    estado: 'abierta',
+    usuario_cierre_id: null,
+    fecha_cierre: null,
+    efectivo_contado: null,
+    pagos_digitales: 0,
+    total_real: null,
+    diferencia: null,
+    reabierto_en: ahora,
+    usuario_reabre_id: usuario && usuario.id !== undefined ? usuario.id : null,
+    motivo_reapertura: motivo,
+    observaciones,
+  };
+}
+
+async function reabrir(id, body, usuario) {
+  const payload = requiredObject(body);
+  const motivo = optionalString(payload.motivo, 'motivo', { max: 300 });
+
+  if (!motivo || motivo.length < 5) {
+    throw new AppError(
+      422,
+      'VALIDATION_ERROR',
+      'El campo "motivo" es obligatorio y debe tener entre 5 y 300 caracteres.',
+      [{ field: 'motivo', value: payload.motivo === undefined ? null : payload.motivo }],
+    );
+  }
+
+  const hoy = store.today();
+  const ayer = store.dateInDays(-1);
+
+  if (!db.isSupabase()) {
+    const cuadre = store.findOrThrow('cuadres_caja', parseId(id), 'Cuadre de caja');
+    validarReapertura(cuadre, hoy, ayer);
+    Object.assign(cuadre, patchReapertura(cuadre, motivo, db.nowIso(), usuario));
+    return getCuadrePorId(cuadre.id);
+  }
+
+  const cuadre = await db.findOrThrow('cuadres_caja', parseId(id), 'Cuadre de caja');
+  validarReapertura(cuadre, hoy, ayer);
+
+  try {
+    await repository.update('cuadres_caja', cuadre.id, patchReapertura(cuadre, motivo, db.nowIso(), usuario));
+  } catch (error) {
+    throw db.persistenceError('No se pudo reabrir el cuadre de caja.', error);
+  }
+
+  return getCuadrePorId(cuadre.id);
+}
+
 function cuadreFila(cuadre) {
   const numero = (valor) => (valor === null || valor === undefined ? null : Number(valor));
   return {
@@ -342,6 +448,9 @@ function cuadreFila(cuadre) {
     pagos_digitales: Number(cuadre.pagos_digitales) || 0,
     total_real: numero(cuadre.total_real),
     diferencia: numero(cuadre.diferencia),
+    reabierto_en: cuadre.reabierto_en === undefined ? null : cuadre.reabierto_en,
+    usuario_reabre_id: cuadre.usuario_reabre_id === undefined ? null : cuadre.usuario_reabre_id,
+    motivo_reapertura: cuadre.motivo_reapertura === undefined ? null : cuadre.motivo_reapertura,
   };
 }
 
@@ -455,6 +564,7 @@ module.exports = {
   getCuadrePorId,
   apertura,
   cierre,
+  reabrir,
   resumenCuadre,
   historialCuadres,
 };

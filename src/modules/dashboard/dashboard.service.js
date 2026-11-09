@@ -21,6 +21,64 @@ function rangoDia(fecha) {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
+const DIAS_SEMANA = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+
+// Desplaza una fecha YYYY-MM-DD en días de calendario (sin hora ni zona).
+function fechaEnDias(fecha, dias) {
+  const [anio, mes, dia] = String(fecha).split('-').map(Number);
+  const base = new Date(Date.UTC(anio, mes - 1, dia));
+  base.setUTCDate(base.getUTCDate() + Number(dias));
+  return base.toISOString().slice(0, 10);
+}
+
+// Letra del día de la semana para una fecha de calendario.
+function diaDeLaSemana(fecha) {
+  const [anio, mes, dia] = String(fecha).split('-').map(Number);
+  return DIAS_SEMANA[new Date(Date.UTC(anio, mes - 1, dia)).getUTCDay()];
+}
+
+// Fecha operativa (Lima, -05:00) de un timestamp de `pagos.fecha`.
+function fechaLima(valor) {
+  const texto = String(valor === null || valor === undefined ? '' : valor);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) {
+    return texto;
+  }
+  const fecha = new Date(texto);
+  if (Number.isNaN(fecha.getTime())) {
+    return texto.slice(0, 10);
+  }
+  return new Date(fecha.getTime() - 5 * 3600000).toISOString().slice(0, 10);
+}
+
+function ventasDelDia(pagos, fecha) {
+  return store.round2(
+    pagos.reduce(
+      (total, pago) => (fechaLima(pago.fecha) === fecha ? total + Number(pago.monto) : total),
+      0,
+    ),
+  );
+}
+
+// Últimos 7 días (incluido `fecha`) con los pagos agrupados por día operativo.
+function serieSemana(pagos, fecha) {
+  const dias = [];
+  for (let desplazamiento = 6; desplazamiento >= 0; desplazamiento -= 1) {
+    const dia = fechaEnDias(fecha, -desplazamiento);
+    dias.push({ fecha: dia, dia: diaDeLaSemana(dia), monto: 0 });
+  }
+
+  const posiciones = new Map(dias.map((item, indice) => [item.fecha, indice]));
+  for (const pago of pagos) {
+    const indice = posiciones.get(fechaLima(pago.fecha));
+    if (indice === undefined) {
+      continue;
+    }
+    dias[indice].monto = store.round2(dias[indice].monto + Number(pago.monto));
+  }
+
+  return dias;
+}
+
 // ---------------------------------------------------------------------
 // DB_MODE=memory (comportamiento histórico)
 // ---------------------------------------------------------------------
@@ -29,6 +87,14 @@ function getDashboardMemoria(fecha) {
   const gastos = store.state.gastos.filter((gasto) => gasto.fecha === fecha);
   const reembolsos = store.state.reembolsos.filter((item) => item.fecha.slice(0, 10) === fecha);
   const pedidos = store.state.pedidos.filter((pedido) => pedido.fecha_pedido.slice(0, 10) === fecha);
+
+  // Pagos de la ventana semanal (una sola pasada en memoria).
+  const desdeSemana = fechaEnDias(fecha, -6);
+  const pagosSemana = store.state.pagos.filter((pago) => {
+    const dia = fechaLima(pago.fecha);
+    return dia >= desdeSemana && dia <= fecha;
+  });
+  const ventasAyer = ventasDelDia(pagosSemana, fechaEnDias(fecha, -1));
 
   const ventas = sumBy(pagos, () => true, (pago) => pago.monto);
   const egresos = store.round2(
@@ -76,6 +142,8 @@ function getDashboardMemoria(fecha) {
 
   return {
     fecha,
+    ventas_ayer: ventasAyer,
+    serie_semana: serieSemana(pagosSemana, fecha),
     kpis: {
       ventas,
       egresos,
@@ -203,6 +271,7 @@ async function getDashboardSupabase(fecha) {
 
   const [
     pagos,
+    pagosSemana,
     gastos,
     reembolsos,
     pedidosDelDia,
@@ -217,6 +286,15 @@ async function getDashboardSupabase(fecha) {
     leerTodas(
       () => repository.table('pagos').select('monto').gte('fecha', start).lt('fecha', end),
       'No se pudieron leer los pagos del día.',
+    ),
+    // Serie semanal + ventas de ayer: una sola consulta para los 7 días.
+    leerTodas(
+      () => repository
+        .table('pagos')
+        .select('fecha,monto')
+        .gte('fecha', rangoDia(fechaEnDias(fecha, -6)).start)
+        .lt('fecha', end),
+      'No se pudieron leer los pagos de la semana.',
     ),
     leerTodas(
       () => repository.table('gastos').select('monto').eq('fecha', fecha),
@@ -262,6 +340,7 @@ async function getDashboardSupabase(fecha) {
   const ventas = store.round2(
     pagos.reduce((sum, pago) => sum + Number(pago.monto), 0),
   );
+  const ventasAyer = ventasDelDia(pagosSemana, fechaEnDias(fecha, -1));
   const totalGastos = store.round2(
     gastos.reduce((sum, gasto) => sum + Number(gasto.monto), 0),
   );
@@ -324,6 +403,8 @@ async function getDashboardSupabase(fecha) {
 
   return {
     fecha,
+    ventas_ayer: ventasAyer,
+    serie_semana: serieSemana(pagosSemana, fecha),
     kpis: {
       ventas,
       egresos,
