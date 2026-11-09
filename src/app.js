@@ -95,6 +95,7 @@ protectedApi.use('/inventario', inventarioRoutes);
 protectedApi.use('/', fichasRoutes);
 protectedApi.use('/fichas', fichasRoutes.fichasRouter);
 protectedApi.use('/', mermaRoutes);
+protectedApi.use('/merma', mermaRoutes);
 protectedApi.use('/devoluciones', devolucionesRoutes);
 protectedApi.use('/gastos', gastosRoutes);
 protectedApi.use('/cuadre-caja', cuadreCajaRoutes);
@@ -102,6 +103,7 @@ protectedApi.use('/reportes', reportesRoutes);
 protectedApi.use('/activos', activosRoutes);
 protectedApi.use('/mantenimientos', activosRoutes.mantenimientosRouter);
 protectedApi.use('/', configuracionRoutes);
+protectedApi.use('/configuracion', configuracionRoutes);
 protectedApi.use('/integraciones', integracionesRoutes);
 
 app.use('/api', protectedApi);

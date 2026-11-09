@@ -12,10 +12,13 @@ const {
   optionalString,
   optionalDate,
   paginate,
+  pageParams,
   parseId,
+  parseSort,
 } = require('../../middleware/validate');
 
 const TIPOS_MOVIMIENTO = ['entrada', 'salida', 'merma', 'ajuste', 'devolucion'];
+const CAMPOS_ORDEN_MOVIMIENTO = ['id', 'fecha', 'cantidad'];
 
 function fechaLima(iso) {
   if (!iso) {
@@ -142,6 +145,151 @@ async function listAlertas() {
     .sort((a, b) => b.faltante - a.faltante);
 
   return { data: data2, meta: { total: data2.length, generado_en: db.nowIso() } };
+}
+
+function finExclusivo(fecha) {
+  const [anio, mes, dia] = fecha.split('-').map(Number);
+  const siguiente = new Date(Date.UTC(anio, mes - 1, dia + 1));
+  return siguiente.toISOString().slice(0, 10);
+}
+
+function valorOrdenMovimiento(fila, campo) {
+  if (campo === 'id' || campo === 'cantidad') {
+    return Number(fila[campo]) || 0;
+  }
+  const valor = fila[campo];
+  return valor === null || valor === undefined ? '' : String(valor);
+}
+
+function ordenarMovimientos(filas, campo, ascending) {
+  const direccion = ascending ? 1 : -1;
+  return [...filas].sort((izq, der) => {
+    const a = valorOrdenMovimiento(izq, campo);
+    const b = valorOrdenMovimiento(der, campo);
+    if (a < b) return -1 * direccion;
+    if (a > b) return 1 * direccion;
+    return (Number(der.id) || 0) - (Number(izq.id) || 0);
+  });
+}
+
+function movimientoDTO(movimiento, insumo, usuario) {
+  return {
+    ...movimiento,
+    cantidad: Number(movimiento.cantidad),
+    stock_resultante: movimiento.stock_resultante === null || movimiento.stock_resultante === undefined
+      ? null
+      : Number(movimiento.stock_resultante),
+    insumo: insumo ? insumo.nombre : null,
+    usuario: usuario ? usuario.nombre : null,
+  };
+}
+
+function filtrosMovimiento(query = {}) {
+  const tipo = query.tipo ? String(query.tipo) : null;
+  if (tipo && !TIPOS_MOVIMIENTO.includes(tipo)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Tipo de movimiento inválido.', [
+      { field: 'tipo', value: tipo },
+    ]);
+  }
+  const insumoId = query.insumo_id ? parseId(query.insumo_id, 'insumo_id') : null;
+  const desde = optionalDate(query.desde, 'desde');
+  const hasta = optionalDate(query.hasta, 'hasta');
+  const { campo, ascending } = parseSort(
+    query.sort,
+    CAMPOS_ORDEN_MOVIMIENTO,
+    'fecha:desc',
+    'sort',
+  );
+  return { tipo, insumoId, desde, hasta, sort: campo, ascending };
+}
+
+function listMovimientosMemoria(filtros, query) {
+  const filtrados = store.state.movimientos_inventario
+    .filter((movimiento) => !filtros.tipo || movimiento.tipo === filtros.tipo)
+    .filter((movimiento) => !filtros.insumoId || movimiento.insumo_id === filtros.insumoId)
+    .filter((movimiento) => !filtros.desde || movimiento.fecha.slice(0, 10) >= filtros.desde)
+    .filter((movimiento) => !filtros.hasta || movimiento.fecha.slice(0, 10) <= filtros.hasta);
+
+  const ordenados = ordenarMovimientos(filtrados, filtros.sort, filtros.ascending);
+  const data = ordenados.map((movimiento) =>
+    movimientoDTO(
+      movimiento,
+      store.find('insumos', movimiento.insumo_id),
+      store.find('usuarios', movimiento.usuario_id),
+    ),
+  );
+  return paginate(data, query);
+}
+
+async function listMovimientosSupabase(filtros, query) {
+  const { page, limit } = pageParams(query);
+
+  let consulta = repository
+    .table('movimientos_inventario')
+    .select('*', { count: 'exact' });
+  if (filtros.tipo) {
+    consulta = consulta.eq('tipo', filtros.tipo);
+  }
+  if (filtros.insumoId) {
+    consulta = consulta.eq('insumo_id', filtros.insumoId);
+  }
+  if (filtros.desde) {
+    consulta = consulta.gte('fecha', filtros.desde);
+  }
+  if (filtros.hasta) {
+    consulta = consulta.lt('fecha', finExclusivo(filtros.hasta));
+  }
+  consulta = consulta
+    .order(filtros.sort, { ascending: filtros.ascending })
+    .order('id', { ascending: false });
+
+  const inicio = (page - 1) * limit;
+  const { data, error, count } = await consulta.range(inicio, inicio + limit - 1);
+  if (error) {
+    throw db.persistenceError('No se pudieron listar los movimientos de inventario.', error);
+  }
+
+  const filas = data || [];
+  const insumoIds = [...new Set(filas.map((fila) => fila.insumo_id))];
+  const usuarioIds = [...new Set(filas.map((fila) => fila.usuario_id))];
+  const [insumos, usuarios] = await Promise.all([
+    insumoIds.length
+      ? repository.list('insumos', {
+        select: 'id, nombre',
+        filters: { id: insumoIds },
+        limit: 1000,
+      })
+      : { data: [] },
+    usuarioIds.length
+      ? repository.list('usuarios', {
+        select: 'id, nombre',
+        filters: { id: usuarioIds },
+        limit: 1000,
+      })
+      : { data: [] },
+  ]);
+  const nombresInsumo = new Map((insumos.data || []).map((insumo) => [insumo.id, insumo]));
+  const nombresUsuario = new Map((usuarios.data || []).map((usuario) => [usuario.id, usuario]));
+
+  const total = typeof count === 'number' ? count : filas.length;
+  return {
+    data: filas.map((movimiento) =>
+      movimientoDTO(
+        movimiento,
+        nombresInsumo.get(movimiento.insumo_id),
+        nombresUsuario.get(movimiento.usuario_id),
+      ),
+    ),
+    meta: { page, limit, total, pages: total === 0 ? 0 : Math.ceil(total / limit) },
+  };
+}
+
+async function listMovimientos(query = {}) {
+  const filtros = filtrosMovimiento(query);
+  if (db.isSupabase()) {
+    return listMovimientosSupabase(filtros, query);
+  }
+  return listMovimientosMemoria(filtros, query);
 }
 
 async function historialMovimientos(insumoId, query = {}) {
@@ -351,6 +499,7 @@ module.exports = {
   estadoStock,
   listInventario,
   listAlertas,
+  listMovimientos,
   historialMovimientos,
   verificarStock,
   aplicarAjustes,

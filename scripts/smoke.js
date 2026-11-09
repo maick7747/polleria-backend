@@ -583,6 +583,344 @@ function resumen(value) {
       throw new Error('El resumen de gastos no devolvió totales reales.');
     }
 
+    // ---- Merma, devoluciones, activos, usuarios e historial global ----
+    const tiposMerma = await request(base, 'GET', '/tipos-merma', { token });
+    const tipoMermaId = tiposMerma.body.data[0].id;
+    const mermaCreada = await request(base, 'POST', '/mermas', {
+      token,
+      body: {
+        tipo_merma_id: tipoMermaId,
+        insumo_id: insumoA,
+        cantidad: 0.5,
+        clasificacion: 'evitable',
+        causa_raiz: 'Prueba smoke',
+        motivo: 'Merma smoke de verificación',
+      },
+    });
+    const mermas = await request(base, 'GET', '/merma/mermas?page=1&limit=5&sort=id:desc', { token });
+    const mermasMetaOk =
+      mermaCreada.status === 201 &&
+      mermas.ok &&
+      Array.isArray(mermas.body.data) &&
+      mermas.body.data.length <= 5 &&
+      typeof mermas.body.meta?.page === 'number' &&
+      typeof mermas.body.meta?.limit === 'number' &&
+      typeof mermas.body.meta?.total === 'number' &&
+      typeof mermas.body.meta?.pages === 'number' &&
+      mermas.body.data.some((merma) => merma.id === mermaCreada.body.id) &&
+      mermas.body.data.every(
+        (merma) =>
+          typeof merma.cantidad === 'number' &&
+          typeof merma.costo_estimado === 'number' &&
+          typeof merma.tipo_merma === 'string' &&
+          typeof merma.registrado_por === 'string',
+      );
+    results.push({
+      name: 'GET /api/merma/mermas (page/sort/meta/DTO)',
+      status: mermasMetaOk ? 200 : 500,
+      detail: mermasMetaOk
+        ? `${mermas.body.data.length}/${mermas.body.meta.total} · páginas ${mermas.body.meta.pages} · tipo=${mermas.body.data[0].tipo_merma}`
+        : JSON.stringify(mermas.body),
+    });
+    if (!mermasMetaOk) {
+      throw new Error(`El listado de mermas no respetó paginación/meta/DTO: ${JSON.stringify({ creada: mermaCreada.body, lista: mermas.body })}`);
+    }
+
+    const devolucionCreada = await request(base, 'POST', '/devoluciones', {
+      token,
+      body: {
+        pedido_id: ronda1.body.id,
+        motivo: 'Devolución smoke de verificación',
+        detalle: 'Creada por scripts/smoke.js',
+      },
+    });
+    const devoluciones = await request(
+      base,
+      'GET',
+      '/devoluciones?page=1&limit=5&q=smoke&sort=fecha_reporte:desc',
+      { token },
+    );
+    const devolucionesMetaOk =
+      devolucionCreada.status === 201 &&
+      devoluciones.ok &&
+      Array.isArray(devoluciones.body.data) &&
+      devoluciones.body.data.length <= 5 &&
+      typeof devoluciones.body.meta?.page === 'number' &&
+      typeof devoluciones.body.meta?.total === 'number' &&
+      typeof devoluciones.body.meta?.pages === 'number' &&
+      devoluciones.body.data.some((item) => item.id === devolucionCreada.body.id) &&
+      devoluciones.body.data.every(
+        (item) =>
+          typeof item.monto_reembolsado === 'number' &&
+          Array.isArray(item.reembolsos) &&
+          (item.pedido_numero === null || typeof item.pedido_numero === 'string'),
+      );
+    results.push({
+      name: 'GET /api/devoluciones (q/sort/meta/DTO)',
+      status: devolucionesMetaOk ? 200 : 500,
+      detail: devolucionesMetaOk
+        ? `${devoluciones.body.data.length}/${devoluciones.body.meta.total} · páginas ${devoluciones.body.meta.pages}`
+        : JSON.stringify(devoluciones.body),
+    });
+    if (!devolucionesMetaOk) {
+      throw new Error(`El listado de devoluciones no respetó q/meta/DTO: ${JSON.stringify({ creada: devolucionCreada.body, lista: devoluciones.body })}`);
+    }
+
+    const devolucionResuelta = await request(
+      base,
+      'POST',
+      `/devoluciones/${devolucionCreada.body.id}/resolver`,
+      { token, body: { estado: 'aceptada', resolucion: 're_preparar' } },
+    );
+    const devolucionResueltaOk =
+      devolucionResuelta.ok &&
+      devolucionResuelta.body.estado === 'aceptada' &&
+      devolucionResuelta.body.resolucion === 're_preparar' &&
+      devolucionResuelta.body.merma &&
+      typeof devolucionResuelta.body.merma.id === 'number';
+    results.push({
+      name: 'POST /api/devoluciones/:id/resolver',
+      status: devolucionResueltaOk ? 200 : 500,
+      detail: devolucionResueltaOk
+        ? `estado=${devolucionResuelta.body.estado} · merma=${devolucionResuelta.body.merma.id}`
+        : JSON.stringify(devolucionResuelta.body),
+    });
+    if (!devolucionResueltaOk) {
+      throw new Error(`La devolución no se resolvió con merma: ${JSON.stringify(devolucionResuelta.body)}`);
+    }
+
+    const activoCreado = await request(base, 'POST', '/activos', {
+      token,
+      body: {
+        nombre: 'Activo smoke de verificación',
+        categoria: 'oficina',
+        cantidad: 1,
+        costo_adquisicion: 150,
+        vida_util_meses: 12,
+        fecha_adquisicion: '2026-01-01',
+      },
+    });
+    const activos = await request(base, 'GET', '/activos?page=1&limit=5&sort=id:desc', { token });
+    const activosMetaOk =
+      activoCreado.status === 201 &&
+      activos.ok &&
+      Array.isArray(activos.body.data) &&
+      activos.body.data.length <= 5 &&
+      typeof activos.body.meta?.total === 'number' &&
+      typeof activos.body.meta?.pages === 'number' &&
+      activos.body.data.some((activo) => activo.id === activoCreado.body.id) &&
+      activos.body.data.every(
+        (activo) =>
+          typeof activo.antiguedad_meses === 'number' &&
+          typeof activo.costo_adquisicion === 'number' &&
+          typeof activo.mantenimientos === 'number',
+      );
+    results.push({
+      name: 'GET /api/activos (page/sort/meta/DTO)',
+      status: activosMetaOk ? 200 : 500,
+      detail: activosMetaOk
+        ? `${activos.body.data.length}/${activos.body.meta.total} · páginas ${activos.body.meta.pages}`
+        : JSON.stringify(activos.body),
+    });
+    if (!activosMetaOk) {
+      throw new Error(`El listado de activos no respetó paginación/meta/DTO: ${JSON.stringify({ creado: activoCreado.body, lista: activos.body })}`);
+    }
+
+    const mantenimientoCreado = await request(
+      base,
+      'POST',
+      `/activos/${activoCreado.body.id}/mantenimientos`,
+      {
+        token,
+        body: {
+          tipo: 'preventivo',
+          descripcion: 'Revisión smoke de verificación',
+          programada_para: '2026-12-01',
+        },
+      },
+    );
+    const mantenimientosActivo = await request(
+      base,
+      'GET',
+      `/activos/${activoCreado.body.id}/mantenimientos`,
+      { token },
+    );
+    const mantenimientoOk =
+      mantenimientoCreado.status === 201 &&
+      mantenimientosActivo.ok &&
+      Array.isArray(mantenimientosActivo.body.data) &&
+      mantenimientosActivo.body.data.some((item) => item.id === mantenimientoCreado.body.id);
+    results.push({
+      name: 'POST+GET /api/activos/:id/mantenimientos',
+      status: mantenimientoOk ? 201 : 500,
+      detail: mantenimientoOk
+        ? `${mantenimientosActivo.body.meta.total} mantenimientos`
+        : JSON.stringify(mantenimientosActivo.body),
+    });
+    if (!mantenimientoOk) {
+      throw new Error(`El mantenimiento no se registró/listó: ${JSON.stringify(mantenimientosActivo.body)}`);
+    }
+
+    const sortActivoInvalido = await request(base, 'GET', '/activos?sort=inventado:desc', { token });
+    const sortActivoInvalidoOk =
+      sortActivoInvalido.status === 400 &&
+      sortActivoInvalido.body?.error?.code === 'VALIDATION_ERROR' &&
+      Array.isArray(sortActivoInvalido.body.error.details) &&
+      sortActivoInvalido.body.error.details.some((detalle) => detalle.field === 'sort');
+    results.push({
+      name: 'GET /api/activos?sort=inventado:desc (400)',
+      status: sortActivoInvalidoOk ? 400 : 500,
+      detail: sortActivoInvalidoOk
+        ? `code=${sortActivoInvalido.body.error.code} · field=sort`
+        : JSON.stringify(sortActivoInvalido.body),
+    });
+    if (!sortActivoInvalidoOk) {
+      throw new Error('Un sort inválido de activos no devolvió 400 VALIDATION_ERROR con field=sort.');
+    }
+
+    const usuarios = await request(
+      base,
+      'GET',
+      '/configuracion/usuarios?page=1&limit=5&sort=id:asc',
+      { token },
+    );
+    const usuariosMetaOk =
+      usuarios.ok &&
+      Array.isArray(usuarios.body.data) &&
+      usuarios.body.data.length <= 5 &&
+      typeof usuarios.body.meta?.total === 'number' &&
+      typeof usuarios.body.meta?.pages === 'number' &&
+      usuarios.body.data.every(
+        (usuario) =>
+          typeof usuario.usuario === 'string' &&
+          Array.isArray(usuario.roles) &&
+          Array.isArray(usuario.permisos),
+      );
+    results.push({
+      name: 'GET /api/configuracion/usuarios (meta/roles/permisos)',
+      status: usuariosMetaOk ? 200 : 500,
+      detail: usuariosMetaOk
+        ? `${usuarios.body.data.length}/${usuarios.body.meta.total} · roles=${usuarios.body.data[0].roles.join('+')}`
+        : JSON.stringify(usuarios.body),
+    });
+    if (!usuariosMetaOk) {
+      throw new Error(`El listado de usuarios no respetó meta/roles/permisos: ${JSON.stringify(usuarios.body)}`);
+    }
+
+    const sufijo = Date.now();
+    const usuarioCreado = await request(base, 'POST', '/configuracion/usuarios', {
+      token,
+      body: {
+        nombre: 'Usuario Smoke',
+        email: `smoke-${sufijo}@fratellis.pe`,
+        usuario: `smoke${sufijo}`,
+        clave: 'demo123',
+        roles: ['Mozo'],
+      },
+    });
+    const rolesActualizados = await request(
+      base,
+      'PUT',
+      `/configuracion/usuarios/${usuarioCreado.body.id}/roles`,
+      { token, body: { roles: ['Mozo', 'Cajero'] } },
+    );
+    const usuarioDesactivado = await request(
+      base,
+      'PATCH',
+      `/configuracion/usuarios/${usuarioCreado.body.id}`,
+      { token, body: { activo: false } },
+    );
+    const usuarioOk =
+      usuarioCreado.status === 201 &&
+      Array.isArray(usuarioCreado.body.roles) &&
+      usuarioCreado.body.roles.includes('Mozo') &&
+      rolesActualizados.ok &&
+      rolesActualizados.body.roles.length === 2 &&
+      rolesActualizados.body.roles.includes('Cajero') &&
+      usuarioDesactivado.ok &&
+      usuarioDesactivado.body.activo === false;
+    results.push({
+      name: 'POST/PUT/PATCH /api/configuracion/usuarios',
+      status: usuarioOk ? 201 : 500,
+      detail: usuarioOk
+        ? `id=${usuarioCreado.body.id} · roles=${rolesActualizados.body.roles.join('+')} · activo=${usuarioDesactivado.body.activo}`
+        : JSON.stringify({ creado: usuarioCreado.body, roles: rolesActualizados.body, patch: usuarioDesactivado.body }),
+    });
+    if (!usuarioOk) {
+      throw new Error('El alta/roles/baja del usuario no devolvió lo esperado.');
+    }
+
+    const rolesCatalogo = await request(base, 'GET', '/configuracion/roles', { token });
+    const permisosCatalogo = await request(base, 'GET', '/configuracion/permisos', { token });
+    const catalogosOk =
+      rolesCatalogo.ok &&
+      permisosCatalogo.ok &&
+      Array.isArray(rolesCatalogo.body.data) &&
+      rolesCatalogo.body.data.length > 0 &&
+      rolesCatalogo.body.data.every((rol) => Array.isArray(rol.permisos)) &&
+      Array.isArray(permisosCatalogo.body.data) &&
+      permisosCatalogo.body.data.length > 0;
+    results.push({
+      name: 'GET /api/configuracion/roles+permisos',
+      status: catalogosOk ? 200 : 500,
+      detail: catalogosOk
+        ? `${rolesCatalogo.body.meta.total} roles · ${permisosCatalogo.body.meta.total} permisos`
+        : JSON.stringify({ roles: rolesCatalogo.body, permisos: permisosCatalogo.body }),
+    });
+    if (!catalogosOk) {
+      throw new Error('Los catálogos de roles/permisos no devolvieron datos.');
+    }
+
+    const movimientos = await request(
+      base,
+      'GET',
+      '/inventario/movimientos?page=1&limit=5&sort=fecha:desc',
+      { token },
+    );
+    const movimientosMetaOk =
+      movimientos.ok &&
+      Array.isArray(movimientos.body.data) &&
+      movimientos.body.data.length <= 5 &&
+      typeof movimientos.body.meta?.total === 'number' &&
+      typeof movimientos.body.meta?.pages === 'number' &&
+      movimientos.body.data.every(
+        (movimiento) =>
+          typeof movimiento.cantidad === 'number' &&
+          Object.prototype.hasOwnProperty.call(movimiento, 'insumo') &&
+          Object.prototype.hasOwnProperty.call(movimiento, 'usuario'),
+      );
+    results.push({
+      name: 'GET /api/inventario/movimientos (meta/DTO)',
+      status: movimientosMetaOk ? 200 : 500,
+      detail: movimientosMetaOk
+        ? `${movimientos.body.data.length}/${movimientos.body.meta.total} · páginas ${movimientos.body.meta.pages}`
+        : JSON.stringify(movimientos.body),
+    });
+    if (!movimientosMetaOk) {
+      throw new Error(`El historial global no respetó meta/DTO: ${JSON.stringify(movimientos.body)}`);
+    }
+
+    const movimientosEntrada = await request(
+      base,
+      'GET',
+      '/inventario/movimientos?tipo=entrada&page=1&limit=5',
+      { token },
+    );
+    const movimientosFiltroOk =
+      movimientosEntrada.ok &&
+      Array.isArray(movimientosEntrada.body.data) &&
+      movimientosEntrada.body.data.every((movimiento) => movimiento.tipo === 'entrada');
+    results.push({
+      name: 'GET /api/inventario/movimientos?tipo=entrada',
+      status: movimientosFiltroOk ? 200 : 500,
+      detail: movimientosFiltroOk
+        ? `${movimientosEntrada.body.meta.total} entradas`
+        : JSON.stringify(movimientosEntrada.body),
+    });
+    if (!movimientosFiltroOk) {
+      throw new Error('El filtro tipo del historial global no se aplicó.');
+    }
+
     console.log('\nSmoke test Fratelli\'s');
     console.log('─'.repeat(74));
     for (const item of results) {

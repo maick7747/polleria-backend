@@ -7,24 +7,34 @@ const service = require('./devoluciones.service');
 const router = express.Router();
 const permiso = requirePermiso('devoluciones.gestionar');
 
-router.get('/', permiso, (req, res) => {
-  res.json(service.listDevoluciones(req.query));
-});
+function manejar(accion) {
+  return async (req, res, next) => {
+    try {
+      await accion(req, res);
+    } catch (error) {
+      next(error);
+    }
+  };
+}
 
-router.get('/:id', permiso, (req, res) => {
-  res.json(service.getDevolucion(req.params.id));
-});
+router.get('/', permiso, manejar(async (req, res) => {
+  res.json(await service.listDevoluciones(req.query));
+}));
 
-router.post('/', permiso, (req, res) => {
-  res.status(201).json(service.crearDevolucion(req.body, req.usuario));
-});
+router.get('/:id', permiso, manejar(async (req, res) => {
+  res.json(await service.getDevolucion(req.params.id));
+}));
 
-router.post('/:id/resolver', permiso, (req, res) => {
-  res.json(service.resolverDevolucion(req.params.id, req.body, req.usuario));
-});
+router.post('/', permiso, manejar(async (req, res) => {
+  res.status(201).json(await service.crearDevolucion(req.body, req.usuario));
+}));
 
-router.post('/:id/reembolso', permiso, (req, res) => {
-  res.json(service.registrarReembolso(req.params.id, req.body, req.usuario));
-});
+router.post('/:id/resolver', permiso, manejar(async (req, res) => {
+  res.json(await service.resolverDevolucion(req.params.id, req.body, req.usuario));
+}));
+
+router.post('/:id/reembolso', permiso, manejar(async (req, res) => {
+  res.json(await service.registrarReembolso(req.params.id, req.body, req.usuario));
+}));
 
 module.exports = router;

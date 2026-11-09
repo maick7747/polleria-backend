@@ -7,28 +7,38 @@ const service = require('./merma.service');
 const router = express.Router();
 const permiso = requirePermiso('merma.gestionar');
 
-router.get('/tipos-merma', permiso, (req, res) => {
-  res.json(service.listTipos());
-});
+function manejar(accion) {
+  return async (req, res, next) => {
+    try {
+      await accion(req, res);
+    } catch (error) {
+      next(error);
+    }
+  };
+}
 
-router.get('/mermas', permiso, (req, res) => {
-  res.json(service.listMermas(req.query));
-});
+router.get('/tipos-merma', permiso, manejar(async (req, res) => {
+  res.json(await service.listTipos());
+}));
 
-router.get('/mermas/:id', permiso, (req, res) => {
-  res.json(service.getMerma(req.params.id));
-});
+router.get('/mermas', permiso, manejar(async (req, res) => {
+  res.json(await service.listMermas(req.query));
+}));
 
-router.post('/mermas', permiso, (req, res) => {
-  res.status(201).json(service.crearMerma(req.body, req.usuario));
-});
+router.get('/mermas/:id', permiso, manejar(async (req, res) => {
+  res.json(await service.getMerma(req.params.id));
+}));
 
-router.post('/mermas/:id/aprobar', permiso, (req, res) => {
-  res.json(service.aprobarMerma(req.params.id, req.body, req.usuario));
-});
+router.post('/mermas', permiso, manejar(async (req, res) => {
+  res.status(201).json(await service.crearMerma(req.body, req.usuario));
+}));
 
-router.post('/mermas/:id/rechazar', permiso, (req, res) => {
-  res.json(service.rechazarMerma(req.params.id, req.body, req.usuario));
-});
+router.post('/mermas/:id/aprobar', permiso, manejar(async (req, res) => {
+  res.json(await service.aprobarMerma(req.params.id, req.body, req.usuario));
+}));
+
+router.post('/mermas/:id/rechazar', permiso, manejar(async (req, res) => {
+  res.json(await service.rechazarMerma(req.params.id, req.body, req.usuario));
+}));
 
 module.exports = router;
