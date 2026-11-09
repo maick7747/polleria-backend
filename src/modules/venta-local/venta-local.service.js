@@ -1097,39 +1097,87 @@ async function cancelarPedido(id, body, usuario) {
   };
 }
 
+const CAMPOS_CLIENTE = [
+  'id',
+  'nombre',
+  'tipo_documento',
+  'numero_documento',
+  'telefono',
+  'direccion',
+  'referencia',
+  'creado_en',
+];
+
+function clienteDTO(cliente) {
+  return {
+    id: cliente.id,
+    nombre: cliente.nombre,
+    tipo_documento: cliente.tipo_documento ?? null,
+    numero_documento: cliente.numero_documento ?? null,
+    telefono: cliente.telefono ?? null,
+    direccion: cliente.direccion ?? null,
+    referencia: cliente.referencia ?? null,
+    creado_en: cliente.creado_en ?? null,
+  };
+}
+
 async function listClientes(query = {}) {
   const documento = query.documento ? String(query.documento).trim() : '';
-  const q = query.q ? String(query.q).trim().toLowerCase() : '';
+  const q = query.q ? String(query.q).trim() : '';
 
   if (!db.isSupabase()) {
+    const buscado = q.toLowerCase();
     const data = store.state.clientes
-      .filter((cliente) => !documento || (cliente.numero_documento || '').includes(documento))
+      .filter((cliente) => !documento || String(cliente.numero_documento || '').includes(documento))
       .filter(
         (cliente) =>
-          !q ||
-          cliente.nombre.toLowerCase().includes(q) ||
-          (cliente.numero_documento || '').includes(q),
+          !buscado ||
+          String(cliente.nombre || '').toLowerCase().includes(buscado) ||
+          String(cliente.numero_documento || '').includes(buscado),
       )
-      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+      .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)))
+      .map(clienteDTO);
 
     return paginate(data, query);
   }
 
-  const { data } = await repository.list('clientes', {
-    orderBy: 'nombre',
-    ascending: true,
-    limit: 100,
-  });
-  const filtrados = data
-    .filter((cliente) => !documento || String(cliente.numero_documento || '').includes(documento))
-    .filter(
-      (cliente) =>
-        !q ||
-        String(cliente.nombre || '').toLowerCase().includes(q) ||
-        String(cliente.numero_documento || '').includes(q),
-    );
+  const { page, limit } = pageParams(query);
+  let consulta = repository
+    .table('clientes')
+    .select(CAMPOS_CLIENTE.join(', '), { count: 'exact' });
 
-  return paginate(filtrados, query);
+  if (documento) {
+    consulta = consulta.ilike('numero_documento', `%${documento}%`);
+  }
+  if (q) {
+    // `or` de PostgREST usa comas y paréntesis como sintaxis: se limpian del
+    // término para que el filtro no se rompa con texto libre.
+    const termino = q.replace(/[,()]/g, ' ').trim();
+    if (termino) {
+      consulta = consulta.or(
+        `nombre.ilike.%${termino}%,numero_documento.ilike.%${termino}%`,
+      );
+    }
+  }
+
+  consulta = consulta.order('nombre', { ascending: true }).order('id', { ascending: true });
+
+  const inicio = (page - 1) * limit;
+  const { data, error, count } = await consulta.range(inicio, inicio + limit - 1);
+  if (error) {
+    throw db.persistenceError('No se pudieron listar los clientes.', error);
+  }
+
+  const total = typeof count === 'number' ? count : (data || []).length;
+  return {
+    data: (data || []).map(clienteDTO),
+    meta: {
+      page,
+      limit,
+      total,
+      pages: total === 0 ? 0 : Math.ceil(total / limit),
+    },
+  };
 }
 
 async function createCliente(body) {

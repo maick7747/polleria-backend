@@ -80,6 +80,7 @@ protectedApi.use(authMiddleware);
 
 protectedApi.use('/dashboard', dashboardRoutes);
 protectedApi.use('/venta-local', ventaLocalRoutes);
+protectedApi.use('/clientes', ventaLocalRoutes.clientesRouter);
 protectedApi.use('/', ventaLocalRoutes);
 protectedApi.use('/kds', cocinaRoutes);
 protectedApi.use('/cocina', cocinaRoutes);

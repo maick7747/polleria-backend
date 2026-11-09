@@ -15,6 +15,15 @@ router.post('/apertura', permiso, async (req, res) => {
   res.status(201).json(await service.apertura(req.body, req.usuario));
 });
 
+// Declarado antes de /:id para que "historial" no se interprete como id.
+router.get('/historial', permiso, async (req, res, next) => {
+  try {
+    res.json(await service.historialCuadres(req.query));
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/:id', permiso, async (req, res) => {
   res.json(await service.getCuadrePorId(req.params.id));
 });

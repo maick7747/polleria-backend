@@ -921,6 +921,171 @@ function resumen(value) {
       throw new Error('El filtro tipo del historial global no se aplicó.');
     }
 
+    // ---- Fase 2: reportes con rango, clientes paginados y cuadre histórico ----
+    const ventasRango = await request(
+      base,
+      'GET',
+      '/reportes/ventas?desde=2020-01-01&hasta=2030-12-31',
+      { token },
+    );
+    const ventasRangoOk =
+      ventasRango.ok &&
+      typeof ventasRango.body.total === 'number' &&
+      typeof ventasRango.body.cantidad_pagos === 'number' &&
+      typeof ventasRango.body.cantidad_tickets === 'number' &&
+      typeof ventasRango.body.ticket_promedio === 'number' &&
+      Array.isArray(ventasRango.body.por_canal) &&
+      Array.isArray(ventasRango.body.por_metodo) &&
+      Array.isArray(ventasRango.body.por_dia) &&
+      Array.isArray(ventasRango.body.top_platillos) &&
+      ventasRango.body.meta &&
+      ventasRango.body.meta.rango &&
+      ventasRango.body.meta.rango.desde === '2020-01-01' &&
+      ventasRango.body.meta.rango.hasta === '2030-12-31';
+    results.push({
+      name: 'GET /api/reportes/ventas?desde&hasta',
+      status: ventasRangoOk ? 200 : 500,
+      detail: ventasRangoOk
+        ? `total=${ventasRango.body.total} · pagos=${ventasRango.body.cantidad_pagos} · días=${ventasRango.body.por_dia.length} · top=${ventasRango.body.top_platillos.length}`
+        : JSON.stringify(ventasRango.body),
+    });
+    if (!ventasRangoOk) {
+      throw new Error(`El reporte de ventas no devolvió los campos esperados: ${JSON.stringify(ventasRango.body)}`);
+    }
+
+    const costosRango = await request(
+      base,
+      'GET',
+      '/reportes/costos?desde=2020-01-01&hasta=2030-12-31',
+      { token },
+    );
+    const costosRangoOk =
+      costosRango.ok &&
+      typeof costosRango.body.total_costos === 'number' &&
+      costosRango.body.compras &&
+      typeof costosRango.body.compras.total === 'number' &&
+      Array.isArray(costosRango.body.compras.por_proveedor) &&
+      costosRango.body.gastos &&
+      typeof costosRango.body.gastos.total === 'number' &&
+      Array.isArray(costosRango.body.gastos.por_categoria) &&
+      costosRango.body.mermas &&
+      typeof costosRango.body.mermas.total === 'number' &&
+      Array.isArray(costosRango.body.mermas.por_tipo) &&
+      costosRango.body.meta;
+    results.push({
+      name: 'GET /api/reportes/costos?desde&hasta',
+      status: costosRangoOk ? 200 : 500,
+      detail: costosRangoOk
+        ? `total=${costosRango.body.total_costos} · compras=${costosRango.body.compras.total} · gastos=${costosRango.body.gastos.total} · mermas=${costosRango.body.mermas.total}`
+        : JSON.stringify(costosRango.body),
+    });
+    if (!costosRangoOk) {
+      throw new Error(`El reporte de costos no devolvió los campos esperados: ${JSON.stringify(costosRango.body)}`);
+    }
+
+    const clientesPagina = await request(base, 'GET', '/clientes?page=1&limit=2', { token });
+    const clientesPaginaOk =
+      clientesPagina.ok &&
+      Array.isArray(clientesPagina.body.data) &&
+      clientesPagina.body.data.length <= 2 &&
+      typeof clientesPagina.body.meta?.page === 'number' &&
+      typeof clientesPagina.body.meta?.limit === 'number' &&
+      typeof clientesPagina.body.meta?.total === 'number' &&
+      typeof clientesPagina.body.meta?.pages === 'number' &&
+      clientesPagina.body.data.every(
+        (cliente) =>
+          typeof cliente.id === 'number' &&
+          typeof cliente.nombre === 'string' &&
+          Object.prototype.hasOwnProperty.call(cliente, 'creado_en') &&
+          Object.prototype.hasOwnProperty.call(cliente, 'numero_documento'),
+      );
+    results.push({
+      name: 'GET /api/clientes (page/limit/meta)',
+      status: clientesPaginaOk ? 200 : 500,
+      detail: clientesPaginaOk
+        ? `${clientesPagina.body.data.length}/${clientesPagina.body.meta.total} · páginas ${clientesPagina.body.meta.pages}`
+        : JSON.stringify(clientesPagina.body),
+    });
+    if (!clientesPaginaOk) {
+      throw new Error(`El listado de clientes no respetó paginación/meta: ${JSON.stringify(clientesPagina.body)}`);
+    }
+
+    const clientesBusqueda = await request(base, 'GET', '/clientes?q=Juan&page=1&limit=10', {
+      token,
+    });
+    const clientesBusquedaOk =
+      clientesBusqueda.ok &&
+      Array.isArray(clientesBusqueda.body.data) &&
+      clientesBusqueda.body.data.length > 0 &&
+      clientesBusqueda.body.data.some((cliente) =>
+        String(cliente.nombre || '').toLowerCase().includes('juan'),
+      );
+    results.push({
+      name: 'GET /api/clientes?q=Juan',
+      status: clientesBusquedaOk ? 200 : 500,
+      detail: clientesBusquedaOk
+        ? `${clientesBusqueda.body.meta.total} coincidencias`
+        : JSON.stringify(clientesBusqueda.body),
+    });
+    if (!clientesBusquedaOk) {
+      throw new Error(`El filtro q de clientes no encontró coincidencias: ${JSON.stringify(clientesBusqueda.body)}`);
+    }
+
+    const historialCuadres = await request(
+      base,
+      'GET',
+      '/cuadre-caja/historial?page=1&limit=5&sort=fecha:desc',
+      { token },
+    );
+    const historialCuadresOk =
+      historialCuadres.ok &&
+      Array.isArray(historialCuadres.body.data) &&
+      historialCuadres.body.data.length <= 5 &&
+      typeof historialCuadres.body.meta?.page === 'number' &&
+      typeof historialCuadres.body.meta?.limit === 'number' &&
+      typeof historialCuadres.body.meta?.total === 'number' &&
+      typeof historialCuadres.body.meta?.pages === 'number' &&
+      historialCuadres.body.meta?.sort === 'fecha:desc' &&
+      historialCuadres.body.data.every(
+        (cuadre) =>
+          typeof cuadre.fondo_inicial === 'number' &&
+          typeof cuadre.total_ventas === 'number' &&
+          typeof cuadre.monto_esperado === 'number' &&
+          (cuadre.diferencia === null || typeof cuadre.diferencia === 'number'),
+      );
+    results.push({
+      name: 'GET /api/cuadre-caja/historial (meta/sort)',
+      status: historialCuadresOk ? 200 : 500,
+      detail: historialCuadresOk
+        ? `${historialCuadres.body.data.length}/${historialCuadres.body.meta.total} · páginas ${historialCuadres.body.meta.pages} · sort=${historialCuadres.body.meta.sort}`
+        : JSON.stringify(historialCuadres.body),
+    });
+    if (!historialCuadresOk) {
+      throw new Error(`El historial de cuadres no respetó meta/sort: ${JSON.stringify(historialCuadres.body)}`);
+    }
+
+    const historialSortInvalido = await request(
+      base,
+      'GET',
+      '/cuadre-caja/historial?sort=inventado:desc',
+      { token },
+    );
+    const historialSortInvalidoOk =
+      historialSortInvalido.status === 400 &&
+      historialSortInvalido.body?.error?.code === 'VALIDATION_ERROR' &&
+      Array.isArray(historialSortInvalido.body.error.details) &&
+      historialSortInvalido.body.error.details.some((detalle) => detalle.field === 'sort');
+    results.push({
+      name: 'GET /api/cuadre-caja/historial?sort=inventado (400)',
+      status: historialSortInvalidoOk ? 400 : 500,
+      detail: historialSortInvalidoOk
+        ? `code=${historialSortInvalido.body.error.code} · field=sort`
+        : JSON.stringify(historialSortInvalido.body),
+    });
+    if (!historialSortInvalidoOk) {
+      throw new Error('Un sort inválido del historial no devolvió 400 VALIDATION_ERROR con field=sort.');
+    }
+
     console.log('\nSmoke test Fratelli\'s');
     console.log('─'.repeat(74));
     for (const item of results) {

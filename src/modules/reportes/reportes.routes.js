@@ -22,8 +22,12 @@ router.get('/tipos', permiso, (req, res) => {
   res.json({ data: service.TIPOS, meta: { total: service.TIPOS.length } });
 });
 
-router.get('/:tipo', permiso, (req, res) => {
-  res.json(service.obtenerReporte(req.params.tipo, req.query));
+router.get('/:tipo', permiso, async (req, res, next) => {
+  try {
+    res.json(await service.obtenerReporte(req.params.tipo, req.query));
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = router;

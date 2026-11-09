@@ -7,24 +7,34 @@ const service = require('./delivery-propio.service');
 const router = express.Router();
 const permiso = requirePermiso('delivery.propio');
 
-router.get('/pedidos', permiso, (req, res) => {
-  res.json(service.listPedidos(req.query));
-});
+function manejar(accion) {
+  return async (req, res, next) => {
+    try {
+      await accion(req, res);
+    } catch (error) {
+      next(error);
+    }
+  };
+}
 
-router.post('/pedidos', permiso, (req, res) => {
-  res.status(201).json(service.crearPedido(req.body, req.usuario));
-});
+router.get('/pedidos', permiso, manejar(async (req, res) => {
+  res.json(await service.listPedidos(req.query));
+}));
 
-router.patch('/pedidos/:id/repartidor', permiso, (req, res) => {
-  res.json(service.asignarRepartidor(req.params.id, req.body));
-});
+router.post('/pedidos', permiso, manejar(async (req, res) => {
+  res.status(201).json(await service.crearPedido(req.body, req.usuario));
+}));
 
-router.patch('/pedidos/:id/estado', permiso, (req, res) => {
-  res.json(service.actualizarEstado(req.params.id, req.body));
-});
+router.patch('/pedidos/:id/repartidor', permiso, manejar(async (req, res) => {
+  res.json(await service.asignarRepartidor(req.params.id, req.body));
+}));
 
-router.post('/pedidos/:id/entrega', permiso, (req, res) => {
-  res.json(service.registrarEntrega(req.params.id, req.body, req.usuario));
-});
+router.patch('/pedidos/:id/estado', permiso, manejar(async (req, res) => {
+  res.json(await service.actualizarEstado(req.params.id, req.body));
+}));
+
+router.post('/pedidos/:id/entrega', permiso, manejar(async (req, res) => {
+  res.json(await service.registrarEntrega(req.params.id, req.body, req.usuario));
+}));
 
 module.exports = router;

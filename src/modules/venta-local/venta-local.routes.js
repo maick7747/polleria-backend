@@ -73,4 +73,17 @@ router.post('/clientes/validar-documento', permisoVenta, async (req, res) => {
   res.json(await service.validarDocumento(req.body));
 });
 
+// Router dedicado para /api/clientes (paginado con meta). Se monta antes del
+// router raíz en app.js para que el listado paginado tenga prioridad.
+const clientesRouter = express.Router();
+
+clientesRouter.get('/', permisoVenta, async (req, res, next) => {
+  try {
+    res.json(await service.listClientes(req.query));
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
+module.exports.clientesRouter = clientesRouter;

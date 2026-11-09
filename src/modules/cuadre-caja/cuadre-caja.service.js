@@ -10,7 +10,11 @@ const {
   optionalString,
   optionalDate,
   parseId,
+  pageParams,
+  parseSort,
 } = require('../../middleware/validate');
+
+const CAMPOS_ORDEN_CUADRE = ['fecha', 'id', 'diferencia'];
 
 function rangoDia(fecha) {
   const start = new Date(`${fecha}T00:00:00-05:00`);
@@ -326,6 +330,125 @@ async function resumenCuadre(id) {
   return (await getCuadrePorId(id)).resumen;
 }
 
+function cuadreFila(cuadre) {
+  const numero = (valor) => (valor === null || valor === undefined ? null : Number(valor));
+  return {
+    ...cuadre,
+    fondo_inicial: Number(cuadre.fondo_inicial) || 0,
+    total_ventas: Number(cuadre.total_ventas) || 0,
+    total_egresos: Number(cuadre.total_egresos) || 0,
+    monto_esperado: Number(cuadre.monto_esperado) || 0,
+    efectivo_contado: numero(cuadre.efectivo_contado),
+    pagos_digitales: Number(cuadre.pagos_digitales) || 0,
+    total_real: numero(cuadre.total_real),
+    diferencia: numero(cuadre.diferencia),
+  };
+}
+
+function valorOrdenCuadre(fila, campo) {
+  if (campo === 'id') {
+    return Number(fila.id) || 0;
+  }
+  if (campo === 'diferencia') {
+    return fila.diferencia === null || fila.diferencia === undefined
+      ? null
+      : Number(fila.diferencia);
+  }
+  return String(fila.fecha ?? '');
+}
+
+function compararCuadres(izquierda, derecha, campo, ascending) {
+  const direccion = ascending ? 1 : -1;
+  const a = valorOrdenCuadre(izquierda, campo);
+  const b = valorOrdenCuadre(derecha, campo);
+
+  // Los importes nulos (cuadres abiertos) van al final sin importar el orden.
+  if (a === null && b === null) {
+    return Number(derecha.id) - Number(izquierda.id);
+  }
+  if (a === null) {
+    return 1;
+  }
+  if (b === null) {
+    return -1;
+  }
+  if (a < b) {
+    return -1 * direccion;
+  }
+  if (a > b) {
+    return 1 * direccion;
+  }
+  return Number(derecha.id) - Number(izquierda.id);
+}
+
+async function historialCuadres(query = {}) {
+  const desde = optionalDate(query.desde, 'desde');
+  const hasta = optionalDate(query.hasta, 'hasta');
+  const { campo, ascending } = parseSort(
+    query.sort,
+    CAMPOS_ORDEN_CUADRE,
+    'fecha:desc',
+    'sort',
+  );
+  const { page, limit } = pageParams(query);
+  const sort = `${campo}:${ascending ? 'asc' : 'desc'}`;
+
+  if (!db.isSupabase()) {
+    const filas = store.state.cuadres_caja
+      .filter((cuadre) => !desde || String(cuadre.fecha) >= desde)
+      .filter((cuadre) => !hasta || String(cuadre.fecha) <= hasta)
+      .sort((izquierda, derecha) => compararCuadres(izquierda, derecha, campo, ascending))
+      .map(cuadreFila);
+
+    const total = filas.length;
+    const inicio = (page - 1) * limit;
+    return {
+      data: filas.slice(inicio, inicio + limit),
+      meta: {
+        page,
+        limit,
+        total,
+        pages: total === 0 ? 0 : Math.ceil(total / limit),
+        desde: desde || null,
+        hasta: hasta || null,
+        sort,
+      },
+    };
+  }
+
+  let consulta = repository.table('cuadres_caja').select('*', { count: 'exact' });
+  if (desde) {
+    consulta = consulta.gte('fecha', desde);
+  }
+  if (hasta) {
+    consulta = consulta.lte('fecha', hasta);
+  }
+  consulta = consulta.order(campo, { ascending });
+  if (campo !== 'id') {
+    consulta = consulta.order('id', { ascending: false });
+  }
+
+  const inicio = (page - 1) * limit;
+  const { data, error, count } = await consulta.range(inicio, inicio + limit - 1);
+  if (error) {
+    throw db.persistenceError('No se pudo leer el historial de cuadres de caja.', error);
+  }
+
+  const total = typeof count === 'number' ? count : (data || []).length;
+  return {
+    data: (data || []).map(cuadreFila),
+    meta: {
+      page,
+      limit,
+      total,
+      pages: total === 0 ? 0 : Math.ceil(total / limit),
+      desde: desde || null,
+      hasta: hasta || null,
+      sort,
+    },
+  };
+}
+
 module.exports = {
   resumenDe,
   obtenerCuadre,
@@ -333,4 +456,5 @@ module.exports = {
   apertura,
   cierre,
   resumenCuadre,
+  historialCuadres,
 };
