@@ -8,6 +8,7 @@ const compression = require('compression');
 const env = require('./config/env');
 const authMiddleware = require('./middleware/auth');
 const { notFoundHandler, errorHandler } = require('./middleware/error');
+const { metricsMiddleware, snapshot } = require('./middleware/metrics');
 
 const authRoutes = require('./modules/auth/auth.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
@@ -49,6 +50,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Métricas por ruta normalizada (ignora /api/health y /api/metrics).
+app.use(metricsMiddleware);
+
 if (env.logRequests && env.nodeEnv !== 'test') {
   app.use((req, res, next) => {
     const startedAt = Date.now();
@@ -71,6 +75,20 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime_sec: Math.round(process.uptime()),
     requestId: req.id,
+  });
+});
+
+// GET /api/metrics — diagnóstico operativo del proceso.
+// No forma parte del contrato de la API ni se consume desde el frontend.
+// Solo devuelve agregados en memoria (método, patrón de ruta, duraciones y
+// errores 5xx): nunca cuerpos, parámetros, cabeceras ni datos de clientes.
+app.get('/api/metrics', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    nota:
+      'Diagnóstico operativo. Agregados en memoria del proceso; se reinician ' +
+      'con el dyno/servidor. No es parte del contrato de la API.',
+    ...snapshot(),
   });
 });
 

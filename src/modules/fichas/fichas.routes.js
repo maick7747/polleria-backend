@@ -15,28 +15,28 @@ router.get('/platillos', permiso, async (req, res) => {
   res.json(await service.listPlatillos(req.query));
 });
 
-router.get('/platillos/:id', permiso, (req, res) => {
-  res.json(service.fichaConDetalle(req.params.id));
+router.get('/platillos/:id', permiso, async (req, res) => {
+  res.json(await service.obtenerPlatillo(req.params.id));
 });
 
-router.post('/platillos', permiso, (req, res) => {
-  res.status(201).json(service.crearPlatillo(req.body));
+router.post('/platillos', permiso, async (req, res) => {
+  res.status(201).json(await service.crearPlatillo(req.body));
 });
 
-router.patch('/platillos/:id', permiso, (req, res) => {
-  res.json(service.actualizarPlatillo(req.params.id, req.body));
+router.patch('/platillos/:id', permiso, async (req, res) => {
+  res.json(await service.actualizarPlatillo(req.params.id, req.body));
 });
 
-router.patch('/platillos/:id/activo', permiso, (req, res) => {
-  res.json(service.cambiarActivo(req.params.id, req.body));
+router.patch('/platillos/:id/activo', permiso, async (req, res) => {
+  res.json(await service.cambiarActivo(req.params.id, req.body));
 });
 
-router.get('/platillos/:id/ficha', permiso, (req, res) => {
-  res.json(service.fichaConDetalle(req.params.id));
+router.get('/platillos/:id/ficha', permiso, async (req, res) => {
+  res.json(await service.obtenerPlatillo(req.params.id));
 });
 
-router.put('/platillos/:id/ficha', permiso, (req, res) => {
-  res.json(service.guardarFicha(req.params.id, req.body));
+router.put('/platillos/:id/ficha', permiso, async (req, res) => {
+  res.json(await service.guardarFicha(req.params.id, req.body));
 });
 
 router.get('/ingredientes', permiso, (req, res) => {

@@ -52,6 +52,7 @@ const env = {
   tokenTtlSec: asNumber(process.env.TOKEN_TTL_SEC, 1800),
   corsOrigin: process.env.CORS_ORIGIN || '*',
   logRequests: process.env.LOG_REQUESTS !== '0',
+  slowRequestMs: asNumber(process.env.SLOW_REQUEST_MS, 3000),
 
   // Integraciones — validación de documentos (patrón Strategy).
   documentoProvider: process.env.DOCUMENTO_PROVIDER || 'mock',

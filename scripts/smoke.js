@@ -269,6 +269,90 @@ function resumen(value) {
       throw new Error('El inventario no devolvió paginación/meta completos.');
     }
 
+    // ---- Fichas y platillos: escrituras (PATCH /platillos, PUT /ficha) ----
+    const platillosPagina = await request(base, 'GET', '/platillos?limit=50', { token });
+    const platilloSmoke = (platillosPagina.body.data || []).find(
+      (platillo) => platillo.ficha && Array.isArray(platillo.ingredientes) && platillo.ingredientes.length > 0,
+    );
+    if (!platilloSmoke) {
+      throw new Error('No hay un platillo con ficha para la prueba de escritura.');
+    }
+    const precioOriginal = Number(platilloSmoke.precio_venta);
+    const precioNuevo = Number((precioOriginal + 1).toFixed(2));
+    const platilloActualizado = await request(base, 'PATCH', `/platillos/${platilloSmoke.id}`, {
+      token,
+      body: { precio_venta: precioNuevo, descripcion: 'Descripción smoke' },
+    });
+    const platilloActualizadoOk =
+      platilloActualizado.ok &&
+      platilloActualizado.body.id === platilloSmoke.id &&
+      Number(platilloActualizado.body.precio_venta) === precioNuevo &&
+      platilloActualizado.body.descripcion === 'Descripción smoke' &&
+      typeof platilloActualizado.body.categoria === 'string' &&
+      Array.isArray(platilloActualizado.body.ingredientes);
+    results.push({
+      name: 'PATCH /api/platillos/:id',
+      status: platilloActualizadoOk ? 200 : 500,
+      detail: platilloActualizadoOk
+        ? `id=${platilloSmoke.id} · precio ${precioOriginal} -> ${platilloActualizado.body.precio_venta}`
+        : JSON.stringify(platilloActualizado.body),
+    });
+    if (!platilloActualizadoOk) {
+      throw new Error(`No se actualizó el platillo: ${JSON.stringify(platilloActualizado.body)}`);
+    }
+
+    const insumoFichaA = inventarioPagina.body.data[0].id;
+    const insumoFichaB = inventarioPagina.body.data[1].id;
+    const fichaGuardada = await request(base, 'PUT', `/platillos/${platilloSmoke.id}/ficha`, {
+      token,
+      body: {
+        porciones_rendimiento: 2,
+        notas: 'Ficha smoke',
+        ingredientes: [
+          { insumo_id: insumoFichaA, cantidad: 1.5 },
+          { insumo_id: insumoFichaB, cantidad: 0.5 },
+        ],
+      },
+    });
+    const fichaGuardadaOk =
+      fichaGuardada.ok &&
+      fichaGuardada.body.ficha &&
+      Number(fichaGuardada.body.ficha.porciones_rendimiento) === 2 &&
+      fichaGuardada.body.ficha.notas === 'Ficha smoke' &&
+      Number(fichaGuardada.body.ficha.costo_total) > 0 &&
+      Array.isArray(fichaGuardada.body.ingredientes) &&
+      fichaGuardada.body.ingredientes.length === 2 &&
+      fichaGuardada.body.ingredientes.every(
+        (item) => typeof item.insumo === 'string' && typeof item.costo_linea === 'number',
+      );
+    results.push({
+      name: 'PUT /api/platillos/:id/ficha',
+      status: fichaGuardadaOk ? 200 : 500,
+      detail: fichaGuardadaOk
+        ? `id=${platilloSmoke.id} · ${fichaGuardada.body.ingredientes.length} ingredientes · costo=${fichaGuardada.body.ficha.costo_total}`
+        : JSON.stringify(fichaGuardada.body),
+    });
+    if (!fichaGuardadaOk) {
+      throw new Error(`No se guardó la ficha técnica: ${JSON.stringify(fichaGuardada.body)}`);
+    }
+
+    // Restaura el estado del seed (el smoke en memoria no debe dejar residuos).
+    await request(base, 'PATCH', `/platillos/${platilloSmoke.id}`, {
+      token,
+      body: { precio_venta: precioOriginal, descripcion: platilloSmoke.descripcion },
+    });
+    await request(base, 'PUT', `/platillos/${platilloSmoke.id}/ficha`, {
+      token,
+      body: {
+        porciones_rendimiento: platilloSmoke.ficha.porciones_rendimiento,
+        notas: platilloSmoke.ficha.notas,
+        ingredientes: platilloSmoke.ingredientes.map((item) => ({
+          insumo_id: item.insumo_id,
+          cantidad: item.cantidad,
+        })),
+      },
+    });
+
     const listosPagina = await request(
       base,
       'GET',

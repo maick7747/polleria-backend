@@ -146,18 +146,22 @@ function metaPlatillos(platillos) {
   };
 }
 
-async function listPlatillosDesdeDb(query, filtros) {
-  const [
-    { data: platillos },
-    { data: categorias },
-    { data: fichas },
-    { data: detalles },
-    { data: insumos },
-  ] = await Promise.all([
-    repository.list('platillos', { orderBy: 'nombre', ascending: true, limit: 500 }),
+async function enriquecerPlatillos(platillos) {
+  if (!platillos || platillos.length === 0) {
+    return [];
+  }
+
+  const platilloIds = platillos.map((platillo) => platillo.id);
+  const [{ data: categorias }, { data: fichas }] = await Promise.all([
     repository.list('categorias_platillo', { limit: 100 }),
-    repository.list('fichas_tecnicas', { limit: 500 }),
-    repository.list('fichas_tecnicas_detalle', { limit: 2000 }),
+    repository.list('fichas_tecnicas', { filters: { platillo_id: platilloIds }, limit: 500 }),
+  ]);
+
+  const fichaIds = fichas.map((ficha) => ficha.id);
+  const [{ data: detalles }, { data: insumos }] = await Promise.all([
+    fichaIds.length
+      ? repository.list('fichas_tecnicas_detalle', { filters: { ficha_id: fichaIds }, limit: 2000 })
+      : { data: [] },
     repository.list('insumos', { limit: 500 }),
   ]);
 
@@ -171,8 +175,15 @@ async function listPlatillosDesdeDb(query, filtros) {
     detallesPorFicha.set(detalle.ficha_id, lista);
   }
 
-  const normalizados = platillos.map((platillo) => {
-    const ficha = fichasPorPlatillo.get(platillo.id) || null;
+  return platillos.map((platillo) => {
+    const filaFicha = fichasPorPlatillo.get(platillo.id) || null;
+    const ficha = filaFicha
+      ? {
+        ...filaFicha,
+        porciones_rendimiento: Number(filaFicha.porciones_rendimiento),
+        costo_total: Number(filaFicha.costo_total),
+      }
+      : null;
     const ingredientes = (ficha ? detallesPorFicha.get(ficha.id) || [] : []).map((detalle) => {
       const insumo = insumosPorId.get(detalle.insumo_id) || null;
       const costoPromedio = insumo ? Number(insumo.costo_promedio) : 0;
@@ -199,6 +210,15 @@ async function listPlatillosDesdeDb(query, filtros) {
       food_cost_pct: precio > 0 ? db.round2((costoPorcion / precio) * 100) : 0,
     };
   });
+}
+
+async function listPlatillosDesdeDb(query, filtros) {
+  const { data: platillos } = await repository.list('platillos', {
+    orderBy: 'nombre',
+    ascending: true,
+    limit: 500,
+  });
+  const normalizados = await enriquecerPlatillos(platillos);
 
   const resultado = paginate(aplicarFiltrosPlatillos(normalizados, filtros), {
     ...query,
@@ -211,6 +231,19 @@ async function listPlatillosDesdeDb(query, filtros) {
       ...metaPlatillos(normalizados),
     },
   };
+}
+
+async function platilloConDetalleDb(platilloId) {
+  const platillo = await db.findOrThrow('platillos', parseId(platilloId), 'Platillo');
+  const [detalle] = await enriquecerPlatillos([platillo]);
+  return detalle;
+}
+
+async function obtenerPlatillo(platilloId) {
+  if (db.isSupabase()) {
+    return platilloConDetalleDb(platilloId);
+  }
+  return fichaConDetalle(platilloId);
 }
 
 async function listPlatillos(query = {}) {
@@ -231,54 +264,120 @@ async function listPlatillos(query = {}) {
   };
 }
 
-function crearPlatillo(body) {
+async function crearPlatillo(body) {
   const payload = requiredObject(body);
   const categoriaId = requiredInt(payload.categoria_id, 'categoria_id', { min: 1 });
-  store.findOrThrow('categorias_platillo', categoriaId, 'Categoría');
+  await db.findOrThrow('categorias_platillo', categoriaId, 'Categoría');
 
-  const platillo = {
-    id: store.nextId('platillos'),
-    categoria_id: categoriaId,
-    nombre: requiredString(payload.nombre, 'nombre', { max: 120 }),
-    descripcion: optionalString(payload.descripcion, 'descripcion', { max: 300 }),
-    precio_venta: requiredNumber(payload.precio_venta, 'precio_venta', { min: 0 }),
-    imagen_url: optionalString(payload.imagen_url, 'imagen_url', { max: 255 }),
-    activo: true,
-    creado_en: store.nowIso(),
-    actualizado_en: store.nowIso(),
-  };
-  store.state.platillos.push(platillo);
-  return fichaConDetalle(platillo.id);
+  const nombre = requiredString(payload.nombre, 'nombre', { max: 120 });
+  const descripcion = optionalString(payload.descripcion, 'descripcion', { max: 300 });
+  const precioVenta = requiredNumber(payload.precio_venta, 'precio_venta', { min: 0 });
+  const imagenUrl = optionalString(payload.imagen_url, 'imagen_url', { max: 255 });
+
+  if (!db.isSupabase()) {
+    const platillo = {
+      id: store.nextId('platillos'),
+      categoria_id: categoriaId,
+      nombre,
+      descripcion,
+      precio_venta: precioVenta,
+      imagen_url: imagenUrl,
+      activo: true,
+      creado_en: store.nowIso(),
+      actualizado_en: store.nowIso(),
+    };
+    store.state.platillos.push(platillo);
+    return fichaConDetalle(platillo.id);
+  }
+
+  let creado;
+  try {
+    creado = await repository.insert('platillos', {
+      categoria_id: categoriaId,
+      nombre,
+      descripcion,
+      precio_venta: precioVenta,
+      imagen_url: imagenUrl,
+      activo: true,
+    });
+  } catch (error) {
+    throw db.persistenceError('No se pudo registrar el platillo.', error);
+  }
+
+  return platilloConDetalleDb(creado.id);
 }
 
-function actualizarPlatillo(id, body) {
-  const platillo = store.findOrThrow('platillos', parseId(id), 'Platillo');
+async function actualizarPlatillo(id, body) {
+  const platillo = await db.findOrThrow('platillos', parseId(id), 'Platillo');
   const payload = requiredObject(body);
 
+  let categoriaId;
   if (payload.categoria_id !== undefined) {
-    const categoriaId = requiredInt(payload.categoria_id, 'categoria_id', { min: 1 });
-    store.findOrThrow('categorias_platillo', categoriaId, 'Categoría');
-    platillo.categoria_id = categoriaId;
+    categoriaId = requiredInt(payload.categoria_id, 'categoria_id', { min: 1 });
+    await db.findOrThrow('categorias_platillo', categoriaId, 'Categoría');
   }
-  if (payload.nombre !== undefined) {
-    platillo.nombre = requiredString(payload.nombre, 'nombre', { max: 120 });
-  }
-  if (payload.descripcion !== undefined) {
-    platillo.descripcion = optionalString(payload.descripcion, 'descripcion', { max: 300 });
-  }
-  if (payload.precio_venta !== undefined) {
-    platillo.precio_venta = requiredNumber(payload.precio_venta, 'precio_venta', { min: 0 });
-  }
-  if (payload.imagen_url !== undefined) {
-    platillo.imagen_url = optionalString(payload.imagen_url, 'imagen_url', { max: 255 });
-  }
-  platillo.actualizado_en = store.nowIso();
+  const nombre = payload.nombre !== undefined
+    ? requiredString(payload.nombre, 'nombre', { max: 120 })
+    : undefined;
+  const descripcion = payload.descripcion !== undefined
+    ? optionalString(payload.descripcion, 'descripcion', { max: 300 })
+    : undefined;
+  const precioVenta = payload.precio_venta !== undefined
+    ? requiredNumber(payload.precio_venta, 'precio_venta', { min: 0 })
+    : undefined;
+  const imagenUrl = payload.imagen_url !== undefined
+    ? optionalString(payload.imagen_url, 'imagen_url', { max: 255 })
+    : undefined;
 
-  return fichaConDetalle(platillo.id);
+  if (!db.isSupabase()) {
+    if (categoriaId !== undefined) {
+      platillo.categoria_id = categoriaId;
+    }
+    if (nombre !== undefined) {
+      platillo.nombre = nombre;
+    }
+    if (descripcion !== undefined) {
+      platillo.descripcion = descripcion;
+    }
+    if (precioVenta !== undefined) {
+      platillo.precio_venta = precioVenta;
+    }
+    if (imagenUrl !== undefined) {
+      platillo.imagen_url = imagenUrl;
+    }
+    platillo.actualizado_en = store.nowIso();
+
+    return fichaConDetalle(platillo.id);
+  }
+
+  const patch = { actualizado_en: db.nowIso() };
+  if (categoriaId !== undefined) {
+    patch.categoria_id = categoriaId;
+  }
+  if (nombre !== undefined) {
+    patch.nombre = nombre;
+  }
+  if (descripcion !== undefined) {
+    patch.descripcion = descripcion;
+  }
+  if (precioVenta !== undefined) {
+    patch.precio_venta = precioVenta;
+  }
+  if (imagenUrl !== undefined) {
+    patch.imagen_url = imagenUrl;
+  }
+
+  try {
+    await repository.update('platillos', platillo.id, patch);
+  } catch (error) {
+    throw db.persistenceError('No se pudo actualizar el platillo.', error);
+  }
+
+  return platilloConDetalleDb(platillo.id);
 }
 
-function cambiarActivo(id, body) {
-  const platillo = store.findOrThrow('platillos', parseId(id), 'Platillo');
+async function cambiarActivo(id, body) {
+  const platillo = await db.findOrThrow('platillos', parseId(id), 'Platillo');
   const payload = requiredObject(body);
 
   if (typeof payload.activo !== 'boolean') {
@@ -287,19 +386,27 @@ function cambiarActivo(id, body) {
     ]);
   }
 
-  platillo.activo = payload.activo;
-  platillo.actualizado_en = store.nowIso();
-  return fichaConDetalle(platillo.id);
+  if (!db.isSupabase()) {
+    platillo.activo = payload.activo;
+    platillo.actualizado_en = store.nowIso();
+    return fichaConDetalle(platillo.id);
+  }
+
+  try {
+    await repository.update('platillos', platillo.id, {
+      activo: payload.activo,
+      actualizado_en: db.nowIso(),
+    });
+  } catch (error) {
+    throw db.persistenceError('No se pudo cambiar el estado del platillo.', error);
+  }
+
+  return platilloConDetalleDb(platillo.id);
 }
 
-function guardarFicha(platilloId, body) {
-  const platillo = store.findOrThrow('platillos', parseId(platilloId), 'Platillo');
-  const payload = requiredObject(body);
-  const porciones = requiredInt(payload.porciones_rendimiento, 'porciones_rendimiento', { min: 1, max: 999 });
-  const items = requiredArray(payload.ingredientes, 'ingredientes', { max: 100 });
-
+function lineasFicha(items, insumosPorId) {
   const vistos = new Set();
-  const lineas = items.map((item, index) => {
+  return items.map((item, index) => {
     const insumoId = requiredInt(item.insumo_id, `ingredientes[${index}].insumo_id`, { min: 1 });
     if (vistos.has(insumoId)) {
       throw new AppError(422, 'BUSINESS_RULE_VIOLATION', 'No se puede repetir un insumo en la ficha.', [
@@ -307,51 +414,164 @@ function guardarFicha(platilloId, body) {
       ]);
     }
     vistos.add(insumoId);
-    const insumo = store.findOrThrow('insumos', insumoId, 'Insumo');
+    const insumo = insumosPorId
+      ? insumosPorId.get(insumoId) || null
+      : store.findOrThrow('insumos', insumoId, 'Insumo');
+    if (!insumo) {
+      throw new AppError(404, 'NOT_FOUND', `Insumo con id ${insumoId} no existe.`);
+    }
     const cantidad = requiredNumber(item.cantidad, `ingredientes[${index}].cantidad`, { min: 0.001 });
     return {
       insumo_id: insumo.id,
       cantidad: store.round3(cantidad),
-      costo_linea: store.round2(cantidad * insumo.costo_promedio),
+      costo_linea: store.round2(cantidad * Number(insumo.costo_promedio)),
     };
   });
+}
 
-  let ficha = store.state.fichas_tecnicas.find((item) => item.platillo_id === platillo.id);
-  if (!ficha) {
-    ficha = {
-      id: store.nextId('fichas_tecnicas'),
+async function guardarFicha(platilloId, body) {
+  const platillo = await db.findOrThrow('platillos', parseId(platilloId), 'Platillo');
+  const payload = requiredObject(body);
+  const porciones = requiredInt(payload.porciones_rendimiento, 'porciones_rendimiento', { min: 1, max: 999 });
+  const items = requiredArray(payload.ingredientes, 'ingredientes', { max: 100 });
+  const notas = optionalString(payload.notas, 'notas', { max: 500 });
+
+  let lineas;
+  if (!db.isSupabase()) {
+    lineas = lineasFicha(items, null);
+  } else {
+    const candidatos = [...new Set(
+      items
+        .map((item) => Number(item && item.insumo_id))
+        .filter((numero) => Number.isInteger(numero) && numero > 0),
+    )];
+    const { data: insumos } = candidatos.length
+      ? await repository.list('insumos', { filters: { id: candidatos }, limit: 1000 })
+      : { data: [] };
+    lineas = lineasFicha(items, new Map(insumos.map((insumo) => [insumo.id, insumo])));
+  }
+
+  const total = store.round2(lineas.reduce((suma, linea) => suma + linea.costo_linea, 0));
+
+  if (!db.isSupabase()) {
+    let ficha = store.state.fichas_tecnicas.find((item) => item.platillo_id === platillo.id);
+    if (!ficha) {
+      ficha = {
+        id: store.nextId('fichas_tecnicas'),
+        platillo_id: platillo.id,
+        porciones_rendimiento: porciones,
+        costo_total: 0,
+        notas: null,
+        activa: true,
+        creado_en: store.nowIso(),
+        actualizado_en: store.nowIso(),
+      };
+      store.state.fichas_tecnicas.push(ficha);
+    }
+
+    store.state.fichas_tecnicas_detalle = store.state.fichas_tecnicas_detalle.filter(
+      (detail) => detail.ficha_id !== ficha.id,
+    );
+    for (const linea of lineas) {
+      store.state.fichas_tecnicas_detalle.push({
+        id: store.nextId('fichas_tecnicas_detalle'),
+        ficha_id: ficha.id,
+        insumo_id: linea.insumo_id,
+        cantidad: linea.cantidad,
+      });
+    }
+
+    ficha.porciones_rendimiento = porciones;
+    ficha.costo_total = total;
+    ficha.notas = notas;
+    ficha.activa = true;
+    ficha.actualizado_en = store.nowIso();
+
+    return fichaConDetalle(platillo.id);
+  }
+
+  const ficha = await db.findOne('fichas_tecnicas', { platillo_id: platillo.id });
+
+  if (ficha) {
+    const anteriores = (await repository.list('fichas_tecnicas_detalle', {
+      filters: { ficha_id: ficha.id },
+      limit: 500,
+    })).data || [];
+
+    const { error } = await repository
+      .table('fichas_tecnicas_detalle')
+      .delete()
+      .eq('ficha_id', ficha.id);
+    if (error) {
+      throw db.persistenceError('No se pudieron reemplazar los ingredientes de la ficha.', error);
+    }
+
+    try {
+      await repository.update('fichas_tecnicas', ficha.id, {
+        porciones_rendimiento: porciones,
+        costo_total: total,
+        notas,
+        activa: true,
+        actualizado_en: db.nowIso(),
+      });
+      await repository.insertMany(
+        'fichas_tecnicas_detalle',
+        lineas.map((linea) => ({
+          ficha_id: ficha.id,
+          insumo_id: linea.insumo_id,
+          cantidad: linea.cantidad,
+        })),
+      );
+    } catch (error) {
+      // Compensación: se intenta devolver los ingredientes anteriores.
+      if (anteriores.length > 0) {
+        try {
+          await repository.insertMany(
+            'fichas_tecnicas_detalle',
+            anteriores.map(({ id: _id, ...resto }) => resto),
+          );
+        } catch (restauracion) {
+          // los ingredientes quedan perdidos; el error original se informa igual
+        }
+      }
+      throw db.persistenceError('No se pudo guardar la ficha técnica.', error);
+    }
+
+    return platilloConDetalleDb(platillo.id);
+  }
+
+  let creada;
+  try {
+    creada = await repository.insert('fichas_tecnicas', {
       platillo_id: platillo.id,
       porciones_rendimiento: porciones,
-      costo_total: 0,
-      notas: null,
+      costo_total: total,
+      notas,
       activa: true,
-      creado_en: store.nowIso(),
-      actualizado_en: store.nowIso(),
-    };
-    store.state.fichas_tecnicas.push(ficha);
-  }
-
-  store.state.fichas_tecnicas_detalle = store.state.fichas_tecnicas_detalle.filter(
-    (detail) => detail.ficha_id !== ficha.id,
-  );
-  let total = 0;
-  for (const linea of lineas) {
-    total += linea.costo_linea;
-    store.state.fichas_tecnicas_detalle.push({
-      id: store.nextId('fichas_tecnicas_detalle'),
-      ficha_id: ficha.id,
-      insumo_id: linea.insumo_id,
-      cantidad: linea.cantidad,
     });
+  } catch (error) {
+    throw db.persistenceError('No se pudo registrar la ficha técnica.', error);
   }
 
-  ficha.porciones_rendimiento = porciones;
-  ficha.costo_total = store.round2(total);
-  ficha.notas = optionalString(payload.notas, 'notas', { max: 500 });
-  ficha.activa = true;
-  ficha.actualizado_en = store.nowIso();
+  try {
+    await repository.insertMany(
+      'fichas_tecnicas_detalle',
+      lineas.map((linea) => ({
+        ficha_id: creada.id,
+        insumo_id: linea.insumo_id,
+        cantidad: linea.cantidad,
+      })),
+    );
+  } catch (error) {
+    try {
+      await repository.remove('fichas_tecnicas', creada.id);
+    } catch (limpieza) {
+      // la ficha queda sin ingredientes; el error original se informa igual
+    }
+    throw db.persistenceError('No se pudieron guardar los ingredientes de la ficha.', error);
+  }
 
-  return fichaConDetalle(platillo.id);
+  return platilloConDetalleDb(platillo.id);
 }
 
 function listIngredientes(query = {}) {
@@ -387,6 +607,7 @@ function listFichas(query = {}) {
 module.exports = {
   fichaDePlatillo,
   fichaConDetalle,
+  obtenerPlatillo,
   listCategorias,
   listPlatillos,
   crearPlatillo,
