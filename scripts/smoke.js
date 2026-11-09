@@ -251,6 +251,38 @@ function resumen(value) {
       );
     }
 
+    // ---- Dashboard DB-aware: KPIs numéricos + ETag/304 ----
+    const dashboard1 = await request(base, 'GET', '/dashboard', { token });
+    const dashboardEtag = dashboard1.headers.get('etag');
+    const dashboard2 = dashboardEtag
+      ? await request(base, 'GET', '/dashboard', {
+        token,
+        headers: { 'If-None-Match': dashboardEtag },
+      })
+      : { status: 0, body: null };
+    const dashboardOk =
+      dashboard1.status === 200 &&
+      dashboard1.body &&
+      dashboard1.body.kpis &&
+      typeof dashboard1.body.kpis.ventas === 'number' &&
+      typeof dashboard1.body.kpis.pedidos === 'number' &&
+      typeof dashboardEtag === 'string' &&
+      dashboardEtag.startsWith('W/"') &&
+      dashboard2.status === 304 &&
+      Array.isArray(dashboard1.body.top_platillos);
+    results.push({
+      name: 'GET /api/dashboard (ETag/304 + KPIs)',
+      status: dashboardOk ? 304 : 500,
+      detail: dashboardOk
+        ? `${dashboardEtag.slice(0, 14)}… · 1ª=${dashboard1.status}, 2ª=${dashboard2.status} · ventas=S/ ${dashboard1.body.kpis.ventas} · pedidos=${dashboard1.body.kpis.pedidos}`
+        : `1ª=${dashboard1.status}, etag=${dashboardEtag}, 2ª=${dashboard2.status}, body=${JSON.stringify(dashboard1.body)}`,
+    });
+    if (!dashboardOk) {
+      throw new Error(
+        `El dashboard no respondió con KPIs numéricos y ETag/304: ${JSON.stringify({ status1: dashboard1.status, etag: dashboardEtag, status2: dashboard2.status, body: dashboard1.body })}`,
+      );
+    }
+
     const inventarioPagina = await request(base, 'GET', '/inventario?page=1&limit=5', { token });
     const inventarioMetaOk =
       inventarioPagina.ok &&
