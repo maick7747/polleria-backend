@@ -23,6 +23,7 @@ const FILES = [
   'migrations/005_perf_indexes.sql',
   'migrations/006_rpc_stock_total.sql',
   'migrations/007_rpc_ronda_envio.sql',
+  'migrations/008_perf_listas_admin.sql',
   'seed.sql',
 ];
 

@@ -356,6 +356,233 @@ function resumen(value) {
       );
     }
 
+    // ---- Compras y gastos (paginación, filtros, sort y DTO) ----------
+    const proveedores = await request(base, 'GET', '/compras/proveedores?page=1&limit=5', { token });
+    const proveedoresOk =
+      proveedores.ok &&
+      Array.isArray(proveedores.body.data) &&
+      typeof proveedores.body.meta?.total === 'number' &&
+      proveedores.body.data.length > 0;
+    results.push({
+      name: 'GET /api/compras/proveedores (paginado)',
+      status: proveedoresOk ? 200 : 500,
+      detail: proveedoresOk
+        ? `${proveedores.body.data.length}/${proveedores.body.meta.total} · ${proveedores.body.data[0].razon_social}`
+        : JSON.stringify(proveedores.body),
+    });
+    if (!proveedoresOk) {
+      throw new Error('Los proveedores no respetaron page/limit/meta.');
+    }
+
+    // Los ids de insumo se resuelven del inventario para que el script también
+    // sirva contra Supabase, donde el seed puede tener otros identificadores.
+    const insumoA = inventarioPagina.body.data[0].id;
+    const insumoB = inventarioPagina.body.data[1].id;
+    const compraCreada = await request(base, 'POST', '/compras', {
+      token,
+      body: {
+        proveedor_id: proveedores.body.data[0].id,
+        items: [
+          { insumo_id: insumoA, cantidad: 2, precio_unitario: 10 },
+          { insumo_id: insumoB, cantidad: 3, precio_unitario: 4.5 },
+        ],
+        notas: 'Orden de prueba smoke',
+      },
+    });
+    const compraOk =
+      compraCreada.status === 201 &&
+      compraCreada.body.id > 0 &&
+      Number(compraCreada.body.total) === 33.5 &&
+      Array.isArray(compraCreada.body.detalles) &&
+      compraCreada.body.detalles.length === 2 &&
+      compraCreada.body.detalles.every(
+        (detalle) => typeof detalle.insumo === 'string' && typeof detalle.unidad_medida === 'string',
+      ) &&
+      Array.isArray(compraCreada.body.pagos);
+    results.push({
+      name: 'POST /api/compras',
+      status: compraOk ? 201 : 500,
+      detail: compraOk
+        ? `id=${compraCreada.body.id} · total=${compraCreada.body.total} · ${compraCreada.body.detalles.length} líneas`
+        : JSON.stringify(compraCreada.body),
+    });
+    if (!compraOk) {
+      throw new Error(`La compra no se creó completo: ${JSON.stringify(compraCreada.body)}`);
+    }
+    const compraId = compraCreada.body.id;
+
+    const compras = await request(
+      base,
+      'GET',
+      '/compras?page=1&limit=5&estado=ordenada&sort=total:desc',
+      { token },
+    );
+    const primeraCompra = (compras.body && compras.body.data && compras.body.data[0]) || {};
+    const comprasMetaOk =
+      compras.ok &&
+      Array.isArray(compras.body.data) &&
+      typeof compras.body.meta?.page === 'number' &&
+      typeof compras.body.meta?.limit === 'number' &&
+      typeof compras.body.meta?.total === 'number' &&
+      typeof compras.body.meta?.pages === 'number' &&
+      compras.body.data.length <= 5 &&
+      compras.body.data.every(
+        (compra) =>
+          typeof compra.total === 'number' &&
+          typeof compra.items === 'number' &&
+          compra.proveedor &&
+          typeof compra.proveedor.razon_social === 'string' &&
+          compra.detalles === undefined,
+      ) &&
+      compras.body.data.every(
+        (compra, indice, lista) => indice === 0 || lista[indice - 1].total >= compra.total,
+      );
+    results.push({
+      name: 'GET /api/compras (page/limit/sort/meta)',
+      status: comprasMetaOk ? 200 : 500,
+      detail: comprasMetaOk
+        ? `${compras.body.data.length}/${compras.body.meta.total} · páginas ${compras.body.meta.pages} · top=${primeraCompra.total}`
+        : JSON.stringify(compras.body),
+    });
+    if (!comprasMetaOk) {
+      throw new Error('El listado de compras no respetó paginación, sort o el DTO.');
+    }
+
+    const comprasTexto = await request(base, 'GET', '/compras?q=smoke&page=1&limit=5', { token });
+    const comprasTextoOk =
+      comprasTexto.ok &&
+      Array.isArray(comprasTexto.body.data) &&
+      comprasTexto.body.data.some((compra) => compra.id === compraId);
+    results.push({
+      name: 'GET /api/compras?q= (filtro en notas/proveedor)',
+      status: comprasTextoOk ? 200 : 500,
+      detail: comprasTextoOk
+        ? `${comprasTexto.body.meta.total} coincidencias`
+        : JSON.stringify(comprasTexto.body),
+    });
+    if (!comprasTextoOk) {
+      throw new Error('El filtro q de compras no encontró la orden creada.');
+    }
+
+    const sortInvalido = await request(base, 'GET', '/compras?sort=inventado:desc', { token });
+    const sortInvalidoOk =
+      sortInvalido.status === 400 &&
+      sortInvalido.body?.error?.code === 'VALIDATION_ERROR' &&
+      Array.isArray(sortInvalido.body.error.details) &&
+      sortInvalido.body.error.details.some((detalle) => detalle.field === 'sort');
+    results.push({
+      name: 'GET /api/compras?sort=inventado:desc (400)',
+      status: sortInvalidoOk ? 400 : 500,
+      detail: sortInvalidoOk
+        ? `code=${sortInvalido.body.error.code} · field=sort`
+        : JSON.stringify(sortInvalido.body),
+    });
+    if (!sortInvalidoOk) {
+      throw new Error('Un sort inválido no devolvió 400 VALIDATION_ERROR con field=sort.');
+    }
+
+    const sugerencia = await request(base, 'GET', '/compras/sugerencia', { token });
+    const sugerenciaOk =
+      sugerencia.ok &&
+      Array.isArray(sugerencia.body.data) &&
+      typeof sugerencia.body.meta?.total === 'number' &&
+      sugerencia.body.meta?.criterio === 'stock_actual <= stock_minimo';
+    results.push({
+      name: 'GET /api/compras/sugerencia',
+      status: sugerenciaOk ? 200 : 500,
+      detail: sugerenciaOk
+        ? `${sugerencia.body.meta.total} insumos por reponer`
+        : JSON.stringify(sugerencia.body),
+    });
+    if (!sugerenciaOk) {
+      throw new Error('La sugerencia de compra no devolvió el meta esperado.');
+    }
+
+    const cancelada = await request(base, 'POST', `/compras/${compraId}/cancelar`, {
+      token,
+      body: { motivo: 'Prueba smoke' },
+    });
+    const canceladaOk =
+      cancelada.ok && cancelada.body.estado === 'cancelada' && cancelada.body.motivo_cancelacion === 'Prueba smoke';
+    results.push({
+      name: 'POST /api/compras/:id/cancelar',
+      status: canceladaOk ? 200 : 500,
+      detail: canceladaOk ? `estado=${cancelada.body.estado}` : JSON.stringify(cancelada.body),
+    });
+    if (!canceladaOk) {
+      throw new Error(`No se pudo cancelar la compra: ${JSON.stringify(cancelada.body)}`);
+    }
+
+    const gastoCreado = await request(base, 'POST', '/gastos', {
+      token,
+      body: {
+        categoria: 'otros',
+        descripcion: 'Gasto smoke de prueba',
+        monto: 77.7,
+        metodo_pago: 'efectivo',
+      },
+    });
+    const gastoOk =
+      gastoCreado.status === 201 &&
+      gastoCreado.body.id > 0 &&
+      Number(gastoCreado.body.monto) === 77.7 &&
+      typeof gastoCreado.body.registrado_por === 'string';
+    results.push({
+      name: 'POST /api/gastos',
+      status: gastoOk ? 201 : 500,
+      detail: gastoOk
+        ? `id=${gastoCreado.body.id} · registrado_por=${gastoCreado.body.registrado_por}`
+        : JSON.stringify(gastoCreado.body),
+    });
+    if (!gastoOk) {
+      throw new Error(`El gasto no se creó completo: ${JSON.stringify(gastoCreado.body)}`);
+    }
+
+    const gastos = await request(
+      base,
+      'GET',
+      '/gastos?page=1&limit=5&q=smoke&sort=monto:desc',
+      { token },
+    );
+    const gastosMetaOk =
+      gastos.ok &&
+      Array.isArray(gastos.body.data) &&
+      typeof gastos.body.meta?.page === 'number' &&
+      typeof gastos.body.meta?.limit === 'number' &&
+      typeof gastos.body.meta?.total === 'number' &&
+      typeof gastos.body.meta?.pages === 'number' &&
+      gastos.body.data.length === 1 &&
+      Number(gastos.body.data[0].monto) === 77.7 &&
+      typeof gastos.body.data[0].registrado_por === 'string';
+    results.push({
+      name: 'GET /api/gastos (page/limit/q/sort/meta)',
+      status: gastosMetaOk ? 200 : 500,
+      detail: gastosMetaOk
+        ? `${gastos.body.data.length}/${gastos.body.meta.total} · páginas ${gastos.body.meta.pages} · monto=${gastos.body.data[0].monto}`
+        : JSON.stringify(gastos.body),
+    });
+    if (!gastosMetaOk) {
+      throw new Error('El listado de gastos no respetó paginación, filtro o DTO.');
+    }
+
+    const resumenGastos = await request(base, 'GET', '/gastos/resumen', { token });
+    const resumenOk =
+      resumenGastos.ok &&
+      typeof resumenGastos.body.total === 'number' &&
+      typeof resumenGastos.body.registros === 'number' &&
+      Array.isArray(resumenGastos.body.por_categoria) &&
+      resumenGastos.body.por_categoria.some((item) => item.categoria === 'otros');
+    results.push({
+      name: 'GET /api/gastos/resumen',
+      status: resumenOk ? 200 : 500,
+      detail: resumenOk
+        ? `S/ ${resumenGastos.body.total} en ${resumenGastos.body.registros} registros`
+        : JSON.stringify(resumenGastos.body),
+    });
+    if (!resumenOk) {
+      throw new Error('El resumen de gastos no devolvió totales reales.');
+    }
+
     console.log('\nSmoke test Fratelli\'s');
     console.log('─'.repeat(74));
     for (const item of results) {
@@ -376,3 +603,4 @@ function resumen(value) {
   console.error('SMOKE FAIL:', error.message);
   process.exitCode = 1;
 });
+

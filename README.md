@@ -30,15 +30,35 @@ Los módulos core funcionan con `DB_MODE=memory` (store en memoria) o
 | `cerrar-cuenta` (detalle, pagos, cobro, comprobante) | Sí | Sí |
 | `cocina` (KDS, estados, ingredientes, métricas) | Sí | Sí |
 | `inventario` (stock, alertas, ajustes, movimientos) | Sí | Sí |
+| `compras` + `proveedores` (órdenes, recepción, pagos, plantilla, sugerencia) | Sí | Sí |
+| `gastos` (listado, resumen, alta y edición) | Sí | Sí |
 | `cuadre-caja` (consulta, apertura, cierre) | Sí | Sí |
 | Resto de módulos | Sí | Aún en `store.js` |
 
 `/api/comandas` es un alias de KDS (`cocina`) y usa la rama persistida.
 
 Con Supabase se usa `SUPABASE_SERVICE_ROLE_KEY` solo en el backend. Las
-operaciones compuestas (abrir cuenta, enviar a cocina, cobrar, ajustar stock)
-no son transaccionales: si un paso falla se devuelve `PERSISTENCIA_ERROR` con
-detalle. El detalle completo está en `../docs/PERSISTENCIA.md`.
+operaciones compuestas (abrir cuenta, enviar a cocina, cobrar, ajustar stock,
+crear compra con detalles, recibir compra) no son transaccionales: si un paso
+falla se devuelve `PERSISTENCIA_ERROR` con detalle y se intenta compensar
+(borrar la cabecera de la compra, restaurar los detalles previos).
+El detalle completo está en `../docs/PERSISTENCIA.md`.
+
+### Orden de despliegue (Fase 1 — Compras y Gastos)
+
+1. **No hay migraciones nuevas.** El código usa solo columnas existentes de
+   `001_schema.sql` (+ índices de `008_perf_listas_admin.sql`).
+2. Desplegar el backend (`src/modules/compras`, `src/modules/gastos`,
+   `src/middleware/validate.js`). Es compatible con `DB_MODE=memory` y con
+   `DB_MODE=supabase`; no requiere ventana de mantenimiento.
+3. Validar en memoria: `npm run smoke` (31 comprobaciones), `npm run verify` y
+   `npm run verify:integraciones`.
+4. Validar contra la base real: `npm run smoke:supabase` (solo lectura + las
+   escrituras que ese script ya hacía). **No se aplica ninguna migración.**
+5. Opcional (mejora futura, no bloqueante): migración que agregue
+   `compras.motivo_cancelacion`, `compras.fecha_cancelacion` y
+   `gastos.actualizado_en`. Mientras no existan, el backend guarda el estado y
+   devuelve el motivo en la respuesta, pero no lo persiste (ver Limitaciones).
 
 ## Variables de entorno
 
@@ -179,17 +199,25 @@ y `/api/cerrar-cuenta/:id`, `/api/cerrar-cuenta/:id/cobrar`, `/api/cerrar-cuenta
 
 | Método | Ruta |
 |--------|------|
-| GET | `/api/compras?estado=&proveedor_id=&desde=&hasta=` |
+| GET | `/api/compras?page=&limit=&estado=ordenada\|recibida\|cancelada&proveedor_id=&desde=&hasta=&q=&sort=id\|fecha\|total\|estado:asc\|desc` |
 | GET | `/api/compras/sugerencia` |
-| GET | `/api/compras/:id` |
+| GET | `/api/compras/:id` (compra + proveedor + detalles con insumo + pagos) |
 | POST | `/api/compras` |
-| PATCH | `/api/compras/:id` |
+| PATCH | `/api/compras/:id` (solo `ordenada`) |
 | POST | `/api/compras/:id/recibir` |
 | POST | `/api/compras/:id/cancelar` |
 | POST | `/api/compras/:id/pagos` |
 | GET | `/api/compras/:id/plantilla?canal=whatsapp\|telefono` |
-| GET | `/api/proveedores?q=` |
+| GET | `/api/compras/proveedores?page=&limit=&q=` (alias de `/api/proveedores`) |
+| POST | `/api/compras/proveedores` |
+| GET | `/api/proveedores?page=&limit=&q=` |
 | POST | `/api/proveedores` |
+
+`q` busca en `proveedor.razon_social` y en `notas` (ilike). El listado devuelve
+`{ data: [{ ...compra, total: number, proveedor: { id, ruc, razon_social }, items: number }], meta }`:
+los detalles completos solo están en `GET /api/compras/:id`. `sort` inválido
+responde `400 VALIDATION_ERROR` con `details: [{ field: "sort" }]`; por defecto
+`id:desc` con desempate por `id` descendente.
 
 ### Inventario (`inventario.gestionar`)
 
@@ -242,11 +270,17 @@ y `/api/cerrar-cuenta/:id`, `/api/cerrar-cuenta/:id/cobrar`, `/api/cerrar-cuenta
 
 | Método | Ruta |
 |--------|------|
-| GET | `/api/gastos?categoria=&desde=&hasta=` |
+| GET | `/api/gastos?page=&limit=&categoria=&desde=&hasta=&q=&sort=id\|fecha\|monto\|categoria:asc\|desc` |
 | GET | `/api/gastos/resumen?desde=&hasta=` |
 | GET | `/api/gastos/:id` |
 | POST | `/api/gastos` |
 | PATCH | `/api/gastos/:id` |
+
+`q` busca en `descripcion` (ilike). Orden por defecto `fecha:desc` con desempate
+por `id` descendente. Cada fila incluye `registrado_por` (nombre del usuario,
+resuelto por lote). El resumen se calcula sobre **todas** las filas del rango
+(paginado interno de 1000 en 1000 en Supabase) e incluye `desde`, `hasta`,
+`total`, `registros` y `por_categoria`.
 
 ### Cuadre de caja (`caja.cuadrar`)
 
@@ -303,6 +337,24 @@ y `/api/cerrar-cuenta/:id`, `/api/cerrar-cuenta/:id/cobrar`, `/api/cerrar-cuenta
 - Los reembolsos se guardan en una colección interna `reembolsos` y afectan el cuadre como egreso.
 - `GET /api/cuadre-caja` devuelve `null` si no existe cuadre para la fecha (tal como indica el contrato).
 - Endpoints adicionales no listados literalmente en el contrato: `/api/comandas`, `/api/fichas`, `/api/cuentas/:id/pagos`, `/api/cuentas/:id/comprobante` y los alias `/api/venta-local/*`, `/api/cocina/*`, `/api/cerrar-cuenta/*`.
+
+### Límites conocidos de Compras y Gastos (Fase 1)
+
+- El listado de compras **ya no** incluye `detalles` ni `pagos` (solo `items`, el
+  conteo). Con el seed son 2 compras, pero con volumen real el payload anterior
+  crecía sin control; el detalle completo sigue en `GET /api/compras/:id`.
+- `compras` no tiene columnas de anulación en el esquema v1: el motivo de
+  cancelación **no se persiste**; se devuelve en la respuesta del endpoint y se
+  intentaría guardar automáticamente si la columna existe (fallback en 42703).
+- `gastos.actualizado_en` no existe en el esquema v1: en Supabase la edición no
+  devuelve esa marca (en memoria se mantiene por compatibilidad).
+- El filtro `q` de compras necesita dos consultas (proveedores coincidentes y
+  luego compras con `or(notas.ilike, proveedor_id.in)`) porque PostgREST no
+  compara columnas de tablas relacionadas en un único filtro. Sigue siendo un
+  número constante de consultas por página (sin N+1).
+- `POST /api/compras/:id/recibir` usa `db.applyMovements` (RPC 006 atómica si
+  existe; si no, bucle equivalente) y luego actualiza `insumo.costo_promedio`
+  con el precio unitario, sin transacción entre ambos pasos.
 
 ## Errores
 

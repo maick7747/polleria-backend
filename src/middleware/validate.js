@@ -88,6 +88,28 @@ function parseId(value, field = 'id') {
   return requiredInt(value, field, { min: 1 });
 }
 
+// Interpreta `campo:asc|desc` (por defecto asc si se omite la dirección).
+// `fallback` es un valor controlado por el servicio, nunca por el cliente.
+function parseSort(value, allowed, fallback = 'id:asc', field = 'sort') {
+  const raw = value === undefined || value === null ? '' : String(value).trim();
+  const texto = raw || fallback;
+  const partes = texto.split(':');
+  const campo = partes[0];
+  const direccion = (partes[1] || 'asc').toLowerCase();
+
+  if (partes.length > 2 || !allowed.includes(campo)) {
+    fail(
+      field,
+      `El campo "${field}" debe tener el formato campo:asc|desc con campo en: ${allowed.join(', ')}.`,
+      value === undefined ? null : value,
+    );
+  }
+  if (direccion !== 'asc' && direccion !== 'desc') {
+    fail(field, `El campo "${field}" solo admite la dirección asc o desc.`, value);
+  }
+  return { campo, ascending: direccion === 'asc' };
+}
+
 function pageParams(query = {}) {
   const page = query.page === undefined ? 1 : requiredInt(query.page, 'page', { min: 1 });
   const limit = query.limit === undefined
@@ -134,5 +156,6 @@ module.exports = {
   parseId,
   pageParams,
   paginate,
+  parseSort,
   optionalDate,
 };
