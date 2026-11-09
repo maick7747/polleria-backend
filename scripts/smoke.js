@@ -1751,100 +1751,287 @@ function resumen(value) {
       throw new Error('El PDF del cuadre de caja no se generó correctamente.');
     }
 
-    // ---- Reapertura del cuadre del día (fecha UNIQUE + POST /reabrir) ----
-    let cuadrePrueba = await request(base, 'GET', '/cuadre-caja', { token });
-    let cuadrePruebaId = cuadrePrueba.body && cuadrePrueba.body.id;
+    // ---- Opción A: una caja por día (pendientes y bloqueos) ----
+    const enMemoria = process.env.DB_MODE === 'memory';
+    const limaDate = (offsetDias = 0) =>
+      new Date(Date.now() - 5 * 3600000 + offsetDias * 86400000).toISOString().slice(0, 10);
+    const hoyFecha = limaDate(0);
+    const ayerFecha = limaDate(-1);
 
-    if (!cuadrePruebaId) {
-      const abierto = await request(base, 'POST', '/cuadre-caja/apertura', {
-        token,
-        body: { fondo_inicial: 0 },
-      });
-      cuadrePruebaId = abierto.body && abierto.body.id;
-      cuadrePrueba = abierto;
+    const pendientesInicial = await request(base, 'GET', '/cuadre-caja/pendientes', { token });
+    const pendientesInicialOk =
+      pendientesInicial.ok && Array.isArray(pendientesInicial.body.data);
+    results.push({
+      name: 'GET /api/cuadre-caja/pendientes',
+      status: pendientesInicialOk ? 200 : 500,
+      detail: pendientesInicialOk
+        ? `${pendientesInicial.body.data.length} pendientes`
+        : JSON.stringify(pendientesInicial.body),
+    });
+    if (!pendientesInicialOk) {
+      throw new Error(
+        `/cuadre-caja/pendientes no devolvió data array: ${JSON.stringify(pendientesInicial.body)}`,
+      );
     }
 
-    if (cuadrePrueba.body && cuadrePrueba.body.estado !== 'cerrada' && cuadrePruebaId) {
-      const esperado = Number(
-        cuadrePrueba.body.resumen ? cuadrePrueba.body.resumen.monto_esperado : 0,
+    const cuentasAbiertasInicial = await request(base, 'GET', '/cuentas?estado=abierta&limit=100', {
+      token,
+    });
+    const cuentasAbiertasLista =
+      (cuentasAbiertasInicial.body && cuentasAbiertasInicial.body.data) || [];
+
+    const cuadreParaCierre = cuadreAbierto.body && cuadreAbierto.body.estado === 'abierta'
+      ? cuadreAbierto.body
+      : (pendientesInicial.body.data || [])[0];
+
+    if (cuadreParaCierre && cuadreParaCierre.id && cuentasAbiertasLista.length > 0) {
+      const cierreConCuentas = await request(
+        base,
+        'POST',
+        `/cuadre-caja/${cuadreParaCierre.id}/cierre`,
+        { token, body: { efectivo_contado: 0, pagos_digitales: 0 } },
       );
-      const cierrePrevio = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/cierre`, {
-        token,
-        body: {
-          efectivo_contado: esperado,
-          pagos_digitales: 0,
-          observaciones: 'Cierre previo a la prueba de reapertura',
-        },
+      const detallesCierre = cierreConCuentas.body?.error?.details;
+      const cierreConCuentasOk =
+        cierreConCuentas.status === 409 &&
+        cierreConCuentas.body?.error?.code === 'CUENTAS_ABIERTAS' &&
+        Array.isArray(detallesCierre) &&
+        detallesCierre.some((detalle) => typeof detalle.cantidad === 'number');
+      results.push({
+        name: 'POST /api/cuadre-caja/:id/cierre (cuentas abiertas 409)',
+        status: cierreConCuentasOk ? 409 : 500,
+        detail: cierreConCuentasOk
+          ? `code=${cierreConCuentas.body.error.code} · cantidad=${detallesCierre[0].cantidad}`
+          : JSON.stringify(cierreConCuentas.body),
       });
-      if (!cierrePrevio.ok) {
-        throw new Error(`No se pudo cerrar el cuadre para probar la reapertura: ${JSON.stringify(cierrePrevio.body)}`);
+      if (!cierreConCuentasOk) {
+        throw new Error(
+          `El cierre con cuentas abiertas debía devolver 409 CUENTAS_ABIERTAS: ${JSON.stringify(cierreConCuentas.body)}`,
+        );
       }
     }
 
-    const reapertura = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+    const aperturaAyer = await request(base, 'POST', '/cuadre-caja/apertura', {
       token,
-      body: { motivo: 'Prueba de reapertura' },
+      body: { fecha: ayerFecha, fondo_inicial: 0 },
     });
-    const reaperturaOk =
-      reapertura.status === 200 &&
-      reapertura.body &&
-      reapertura.body.estado === 'abierta' &&
-      reapertura.body.motivo_reapertura === 'Prueba de reapertura' &&
-      Boolean(reapertura.body.reabierto_en) &&
-      reapertura.body.fecha_cierre === null &&
-      reapertura.body.diferencia === null;
+    const aperturaAyerOk = aperturaAyer.status === 201 || aperturaAyer.status === 409;
     results.push({
-      name: 'POST /api/cuadre-caja/:id/reabrir',
-      status: reaperturaOk ? 200 : 500,
-      detail: reaperturaOk
-        ? `cuadre=${reapertura.body.id} · estado=${reapertura.body.estado} · motivo=${reapertura.body.motivo_reapertura}`
-        : JSON.stringify(reapertura.body),
+      name: 'POST /api/cuadre-caja/apertura (día anterior)',
+      status: aperturaAyerOk ? aperturaAyer.status : 500,
+      detail: `${aperturaAyer.status} · fecha=${ayerFecha}`,
     });
-    if (!reaperturaOk) {
+    if (!aperturaAyerOk) {
       throw new Error(
-        `La reapertura del cuadre no devolvió estado 'abierta' con motivo_reapertura: ${JSON.stringify(reapertura.body)}`,
+        `No se pudo preparar la caja de ayer de prueba: ${JSON.stringify(aperturaAyer.body)}`,
       );
     }
 
-    const reaperturaDoble = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+    const aperturaBloqueada = await request(base, 'POST', '/cuadre-caja/apertura', {
       token,
-      body: { motivo: 'Prueba de reapertura' },
+      body: { fecha: hoyFecha, fondo_inicial: 0 },
     });
-    const reaperturaDobleOk =
-      reaperturaDoble.status === 409 && reaperturaDoble.body.error.code === 'CUADRE_NO_CERRADO';
+    const detallesApertura = aperturaBloqueada.body?.error?.details;
+    const aperturaBloqueadaOk =
+      aperturaBloqueada.status === 409 &&
+      aperturaBloqueada.body?.error?.code === 'CAJA_ANTERIOR_ABIERTA' &&
+      Array.isArray(detallesApertura) &&
+      detallesApertura.some((detalle) => detalle.id && detalle.fecha);
     results.push({
-      name: 'POST /api/cuadre-caja/:id/reabrir (409)',
-      status: reaperturaDobleOk ? 409 : 500,
-      detail: reaperturaDobleOk
-        ? `code=${reaperturaDoble.body.error.code}`
-        : JSON.stringify(reaperturaDoble.body),
+      name: 'POST /api/cuadre-caja/apertura (caja anterior abierta 409)',
+      status: aperturaBloqueadaOk ? 409 : 500,
+      detail: aperturaBloqueadaOk
+        ? `code=${aperturaBloqueada.body.error.code} · fecha=${detallesApertura[0].fecha}`
+        : JSON.stringify(aperturaBloqueada.body),
     });
-    if (!reaperturaDobleOk) {
+    if (!aperturaBloqueadaOk) {
       throw new Error(
-        `Reabrir un cuadre ya abierto debía devolver 409 CUADRE_NO_CERRADO: ${JSON.stringify(reaperturaDoble.body)}`,
+        `Abrir la caja con una caja anterior abierta debía devolver 409 CAJA_ANTERIOR_ABIERTA: ${JSON.stringify(aperturaBloqueada.body)}`,
       );
     }
 
-    const reaperturaMotivoCorto = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
-      token,
-      body: { motivo: 'abc' },
-    });
-    const reaperturaMotivoCortoOk =
-      reaperturaMotivoCorto.status === 422 &&
-      reaperturaMotivoCorto.body.error.code === 'VALIDATION_ERROR' &&
-      Array.isArray(reaperturaMotivoCorto.body.error.details) &&
-      reaperturaMotivoCorto.body.error.details.some((detalle) => detalle.field === 'motivo');
-    results.push({
-      name: 'POST /api/cuadre-caja/:id/reabrir (motivo corto 422)',
-      status: reaperturaMotivoCortoOk ? 422 : 500,
-      detail: reaperturaMotivoCortoOk
-        ? `code=${reaperturaMotivoCorto.body.error.code} · field=motivo`
-        : JSON.stringify(reaperturaMotivoCorto.body),
-    });
-    if (!reaperturaMotivoCortoOk) {
-      throw new Error(
-        `Un motivo de reapertura demasiado corto debía devolver 422 VALIDATION_ERROR: ${JSON.stringify(reaperturaMotivoCorto.body)}`,
+    const pendientesConCaja = await request(base, 'GET', '/cuadre-caja/pendientes', { token });
+    const pendientesConCajaOk =
+      pendientesConCaja.ok &&
+      Array.isArray(pendientesConCaja.body.data) &&
+      pendientesConCaja.body.data.length > 0 &&
+      pendientesConCaja.body.data.some(
+        (cuadre) => String(cuadre.fecha).slice(0, 10) === ayerFecha,
+      ) &&
+      pendientesConCaja.body.data.every(
+        (cuadre) => cuadre.resumen && typeof cuadre.resumen.monto_esperado === 'number',
       );
+    results.push({
+      name: 'GET /api/cuadre-caja/pendientes (resumen)',
+      status: pendientesConCajaOk ? 200 : 500,
+      detail: pendientesConCajaOk
+        ? `${pendientesConCaja.body.data.length} pendientes · ayer=${ayerFecha}`
+        : JSON.stringify(pendientesConCaja.body),
+    });
+    if (!pendientesConCajaOk) {
+      throw new Error(
+        `Los pendientes no incluyeron la caja de ayer con resumen: ${JSON.stringify(pendientesConCaja.body)}`,
+      );
+    }
+
+    const cajeroLogin = await request(base, 'POST', '/auth/login', {
+      body: { email: 'cajero@fratellis.pe', password: 'demo123' },
+    });
+    if (cajeroLogin.ok && cajeroLogin.body.token) {
+      const cajaPendienteId = (pendientesConCaja.body.data[0] || {}).id;
+      const reabrirCajero = cajaPendienteId
+        ? await request(base, 'POST', `/cuadre-caja/${cajaPendienteId}/reabrir`, {
+          token: cajeroLogin.body.token,
+          body: { motivo: 'Intento de cajero' },
+        })
+        : { status: 0, body: null };
+      const reabrirCajeroOk = reabrirCajero.status === 403;
+      results.push({
+        name: 'POST /api/cuadre-caja/:id/reabrir (cajero 403)',
+        status: reabrirCajeroOk ? 403 : 500,
+        detail: reabrirCajeroOk
+          ? `code=${reabrirCajero.body.error.code}`
+          : JSON.stringify(reabrirCajero.body),
+      });
+      if (!reabrirCajeroOk) {
+        throw new Error(
+          `Reabrir con un usuario sin rol Dueño/Admin debía devolver 403: ${JSON.stringify(reabrirCajero.body)}`,
+        );
+      }
+    }
+
+    // Solo en memoria: cancelar las cuentas de prueba y cerrar la caja de ayer
+    // creada arriba, para poder probar el cierre/reapertura de hoy sin tocar
+    // datos reales cuando el smoke corre contra Supabase.
+    if (enMemoria) {
+      for (const cuenta of cuentasAbiertasLista) {
+        await request(base, 'POST', `/cuentas/${cuenta.id}/cancelar`, {
+          token,
+          body: { motivo: 'Limpieza smoke Opción A' },
+        });
+      }
+
+      if (aperturaAyer.status === 201 && aperturaAyer.body && aperturaAyer.body.id) {
+        const detalleAyer = await request(base, 'GET', `/cuadre-caja/${aperturaAyer.body.id}`, {
+          token,
+        });
+        const esperadoAyer = Number(
+          detalleAyer.body && detalleAyer.body.resumen
+            ? detalleAyer.body.resumen.monto_esperado
+            : 0,
+        );
+        const cierreAyer = await request(base, 'POST', `/cuadre-caja/${aperturaAyer.body.id}/cierre`, {
+          token,
+          body: { efectivo_contado: esperadoAyer, pagos_digitales: 0 },
+        });
+        if (!cierreAyer.ok) {
+          throw new Error(
+            `No se pudo cerrar la caja de ayer de prueba: ${JSON.stringify(cierreAyer.body)}`,
+          );
+        }
+      }
+    }
+
+    const cuentasRestantes = await request(base, 'GET', '/cuentas?estado=abierta&limit=1', { token });
+    const hayCuentasRestantes =
+      (cuentasRestantes.body && cuentasRestantes.body.data || []).length > 0;
+
+    if (!hayCuentasRestantes) {
+      // ---- Reapertura del cuadre del día (fecha UNIQUE + POST /reabrir) ----
+      let cuadrePrueba = await request(base, 'GET', '/cuadre-caja', { token });
+      let cuadrePruebaId = cuadrePrueba.body && cuadrePrueba.body.id;
+
+      if (!cuadrePruebaId) {
+        const abierto = await request(base, 'POST', '/cuadre-caja/apertura', {
+          token,
+          body: { fondo_inicial: 0 },
+        });
+        cuadrePruebaId = abierto.body && abierto.body.id;
+        cuadrePrueba = abierto;
+      }
+
+      if (cuadrePrueba.body && cuadrePrueba.body.estado !== 'cerrada' && cuadrePruebaId) {
+        const esperado = Number(
+          cuadrePrueba.body.resumen ? cuadrePrueba.body.resumen.monto_esperado : 0,
+        );
+        const cierrePrevio = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/cierre`, {
+          token,
+          body: {
+            efectivo_contado: esperado,
+            pagos_digitales: 0,
+            observaciones: 'Cierre previo a la prueba de reapertura',
+          },
+        });
+        if (!cierrePrevio.ok) {
+          throw new Error(`No se pudo cerrar el cuadre para probar la reapertura: ${JSON.stringify(cierrePrevio.body)}`);
+        }
+      }
+
+      const reapertura = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+        token,
+        body: { motivo: 'Prueba de reapertura' },
+      });
+      const reaperturaOk =
+        reapertura.status === 200 &&
+        reapertura.body &&
+        reapertura.body.estado === 'abierta' &&
+        reapertura.body.motivo_reapertura === 'Prueba de reapertura' &&
+        Boolean(reapertura.body.reabierto_en) &&
+        reapertura.body.fecha_cierre === null &&
+        reapertura.body.diferencia === null;
+      results.push({
+        name: 'POST /api/cuadre-caja/:id/reabrir',
+        status: reaperturaOk ? 200 : 500,
+        detail: reaperturaOk
+          ? `cuadre=${reapertura.body.id} · estado=${reapertura.body.estado} · motivo=${reapertura.body.motivo_reapertura}`
+          : JSON.stringify(reapertura.body),
+      });
+      if (!reaperturaOk) {
+        throw new Error(
+          `La reapertura del cuadre no devolvió estado 'abierta' con motivo_reapertura: ${JSON.stringify(reapertura.body)}`,
+        );
+      }
+
+      const reaperturaDoble = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+        token,
+        body: { motivo: 'Prueba de reapertura' },
+      });
+      const reaperturaDobleOk =
+        reaperturaDoble.status === 409 && reaperturaDoble.body.error.code === 'CUADRE_NO_CERRADO';
+      results.push({
+        name: 'POST /api/cuadre-caja/:id/reabrir (409)',
+        status: reaperturaDobleOk ? 409 : 500,
+        detail: reaperturaDobleOk
+          ? `code=${reaperturaDoble.body.error.code}`
+          : JSON.stringify(reaperturaDoble.body),
+      });
+      if (!reaperturaDobleOk) {
+        throw new Error(
+          `Reabrir un cuadre ya abierto debía devolver 409 CUADRE_NO_CERRADO: ${JSON.stringify(reaperturaDoble.body)}`,
+        );
+      }
+
+      const reaperturaMotivoCorto = await request(base, 'POST', `/cuadre-caja/${cuadrePruebaId}/reabrir`, {
+        token,
+        body: { motivo: 'abc' },
+      });
+      const reaperturaMotivoCortoOk =
+        reaperturaMotivoCorto.status === 422 &&
+        reaperturaMotivoCorto.body.error.code === 'VALIDATION_ERROR' &&
+        Array.isArray(reaperturaMotivoCorto.body.error.details) &&
+        reaperturaMotivoCorto.body.error.details.some((detalle) => detalle.field === 'motivo');
+      results.push({
+        name: 'POST /api/cuadre-caja/:id/reabrir (motivo corto 422)',
+        status: reaperturaMotivoCortoOk ? 422 : 500,
+        detail: reaperturaMotivoCortoOk
+          ? `code=${reaperturaMotivoCorto.body.error.code} · field=motivo`
+          : JSON.stringify(reaperturaMotivoCorto.body),
+      });
+      if (!reaperturaMotivoCortoOk) {
+        throw new Error(
+          `Un motivo de reapertura demasiado corto debía devolver 422 VALIDATION_ERROR: ${JSON.stringify(reaperturaMotivoCorto.body)}`,
+        );
+      }
     }
 
     console.log('\nSmoke test Fratelli\'s');

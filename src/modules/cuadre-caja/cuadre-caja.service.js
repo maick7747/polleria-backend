@@ -210,11 +210,89 @@ async function getCuadrePorId(id) {
   );
 }
 
+function esAdmin(usuario) {
+  const roles = Array.isArray(usuario && usuario.roles) ? usuario.roles : [];
+  return roles.includes('Dueño/Admin') || roles.includes('Admin');
+}
+
+async function contarCuentasAbiertas() {
+  if (!db.isSupabase()) {
+    return store.state.cuentas.filter((cuenta) => cuenta.estado === 'abierta').length;
+  }
+  const { count, error } = await repository
+    .table('cuentas')
+    .select('id', { count: 'exact', head: true })
+    .eq('estado', 'abierta');
+  if (error) {
+    throw db.persistenceError('No se pudieron contar las cuentas abiertas.', error);
+  }
+  return Number(count) || 0;
+}
+
+async function validarCierrePermitido(cuadre, usuario) {
+  if (String(cuadre.fecha).slice(0, 10) !== store.today() && !esAdmin(usuario)) {
+    throw new AppError(
+      403,
+      'SOLO_ADMIN',
+      'Solo el Dueño/Admin puede cerrar la caja de un día anterior.',
+    );
+  }
+
+  const cantidad = await contarCuentasAbiertas();
+  if (cantidad > 0) {
+    throw new AppError(
+      409,
+      'CUENTAS_ABIERTAS',
+      `Hay ${cantidad} cuentas abiertas. Cóbralas o cancélalas antes de cerrar la caja.`,
+      [{ cantidad }],
+    );
+  }
+}
+
+async function cajaAnteriorAbierta(fecha) {
+  if (!db.isSupabase()) {
+    return store.state.cuadres_caja
+      .filter((cuadre) => cuadre.estado === 'abierta' && String(cuadre.fecha).slice(0, 10) < fecha)
+      .sort((izquierda, derecha) => {
+        const porFecha = String(derecha.fecha).localeCompare(String(izquierda.fecha));
+        return porFecha !== 0 ? porFecha : Number(derecha.id) - Number(izquierda.id);
+      })[0] || null;
+  }
+
+  const { data, error } = await repository
+    .table('cuadres_caja')
+    .select('*')
+    .eq('estado', 'abierta')
+    .lt('fecha', fecha)
+    .order('fecha', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(1);
+  if (error) {
+    throw db.persistenceError('No se pudo verificar la caja anterior.', error);
+  }
+  return (data || [])[0] || null;
+}
+
+function bloquearCajaAnterior(anterior) {
+  const fecha = String(anterior.fecha).slice(0, 10);
+  throw new AppError(
+    409,
+    'CAJA_ANTERIOR_ABIERTA',
+    `La caja del ${fecha} sigue abierta. Ciérrala antes de abrir la de hoy.`,
+    [{ id: anterior.id, fecha }],
+  );
+}
+
 async function apertura(body, usuario) {
   const payload = requiredObject(body);
   const fecha = optionalDate(payload.fecha, 'fecha') || store.today();
   const fondoInicial = requiredNumber(payload.fondo_inicial, 'fondo_inicial', { min: 0 });
   const observaciones = optionalString(payload.observaciones, 'observaciones', { max: 300 });
+
+  const anterior = await cajaAnteriorAbierta(fecha);
+  if (anterior) {
+    bloquearCajaAnterior(anterior);
+  }
 
   if (!db.isSupabase()) {
     if (store.state.cuadres_caja.some((cuadre) => cuadre.fecha === fecha)) {
@@ -285,6 +363,7 @@ async function cierre(id, body, usuario) {
       ? 0
       : requiredNumber(payload.pagos_digitales, 'pagos_digitales', { min: 0 });
     const observaciones = optionalString(payload.observaciones, 'observaciones', { max: 300 });
+    await validarCierrePermitido(cuadre, usuario);
     const resumen = await resumenDe(cuadre.fecha, cuadre.fondo_inicial, efectivo, digitales);
 
     if (resumen.alerta && !observaciones) {
@@ -321,6 +400,7 @@ async function cierre(id, body, usuario) {
     ? 0
     : requiredNumber(payload.pagos_digitales, 'pagos_digitales', { min: 0 });
   const observaciones = optionalString(payload.observaciones, 'observaciones', { max: 300 });
+  await validarCierrePermitido(cuadre, usuario);
   const resumen = await resumenDe(cuadre.fecha, Number(cuadre.fondo_inicial), efectivo, digitales);
 
   if (resumen.alerta && !observaciones) {
@@ -558,6 +638,49 @@ async function historialCuadres(query = {}) {
   };
 }
 
+async function listPendientes() {
+  const hoy = store.today();
+  let pendientes;
+
+  if (!db.isSupabase()) {
+    pendientes = store.state.cuadres_caja
+      .filter((cuadre) => cuadre.estado === 'abierta' && String(cuadre.fecha).slice(0, 10) < hoy)
+      .sort((izquierda, derecha) => {
+        const porFecha = String(derecha.fecha).localeCompare(String(izquierda.fecha));
+        return porFecha !== 0 ? porFecha : Number(derecha.id) - Number(izquierda.id);
+      });
+  } else {
+    const { data, error } = await repository
+      .table('cuadres_caja')
+      .select('*')
+      .eq('estado', 'abierta')
+      .lt('fecha', hoy)
+      .order('fecha', { ascending: false })
+      .order('id', { ascending: false });
+    if (error) {
+      throw db.persistenceError('No se pudieron leer las cajas pendientes.', error);
+    }
+    pendientes = data || [];
+  }
+
+  const data = [];
+  for (const pendiente of pendientes) {
+    const cuadre = await getCuadrePorId(pendiente.id);
+    data.push({
+      id: cuadre.id,
+      fecha: cuadre.fecha,
+      estado: cuadre.estado,
+      fondo_inicial: cuadre.fondo_inicial,
+      total_ventas: cuadre.total_ventas,
+      total_egresos: cuadre.total_egresos,
+      monto_esperado: cuadre.monto_esperado,
+      resumen: cuadre.resumen,
+    });
+  }
+
+  return { data };
+}
+
 module.exports = {
   resumenDe,
   obtenerCuadre,
@@ -567,4 +690,5 @@ module.exports = {
   reabrir,
   resumenCuadre,
   historialCuadres,
+  listPendientes,
 };

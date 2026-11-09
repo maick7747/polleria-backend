@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { requirePermiso } = require('../../middleware/roles');
+const { requirePermiso, requireRoles } = require('../../middleware/roles');
 const service = require('./cuadre-caja.service');
 const exportador = require('./cuadre-caja.export');
 const reportesService = require('../reportes/reportes.service');
@@ -41,7 +41,16 @@ router.post('/apertura', permiso, async (req, res) => {
   res.status(201).json(await service.apertura(req.body, req.usuario));
 });
 
-// Declarado antes de /:id para que "historial" no se interprete como id.
+// Declarado antes de /:id para que "pendientes" e "historial" no se
+// interpreten como ids.
+router.get('/pendientes', permiso, async (req, res, next) => {
+  try {
+    res.json(await service.listPendientes());
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/historial', permiso, async (req, res, next) => {
   try {
     res.json(await service.historialCuadres(req.query));
@@ -59,7 +68,7 @@ router.post('/:id/cierre', permiso, async (req, res) => {
 });
 
 // POST /api/cuadre-caja/:id/reabrir — reabre el cuadre del día (o el de ayer).
-router.post('/:id/reabrir', permiso, async (req, res, next) => {
+router.post('/:id/reabrir', permiso, requireRoles('Dueño/Admin', 'Admin'), async (req, res, next) => {
   try {
     res.json(await service.reabrir(req.params.id, req.body, req.usuario));
   } catch (error) {

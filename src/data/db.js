@@ -112,14 +112,11 @@ async function cajaAbierta(fecha = store.today()) {
   if (!isSupabase()) {
     return store.cajaAbierta(fecha);
   }
-  const delDia = await findOne('cuadres_caja', { fecha, estado: 'abierta' });
-  if (delDia) {
-    return delDia;
-  }
-  // Tolerancia de zona horaria: el seed usa CURRENT_DATE de PostgreSQL (UTC)
-  // y el backend calcula la fecha en America/Lima. Si difieren, se usa el
-  // cuadre abierto más reciente para no bloquear la operación.
-  return findOne('cuadres_caja', { estado: 'abierta' }, 'id', false);
+  // Solo la caja abierta de la fecha exacta (calendario America/Lima).
+  // Ya no se tolera una caja de otra fecha: si el día cambió hay que abrir
+  // la caja del día y apertura() bloquea mientras exista una caja anterior
+  // abierta (Opción A: una caja por día con corrección).
+  return findOne('cuadres_caja', { fecha, estado: 'abierta' });
 }
 
 async function requireCajaAbierta(fecha = store.today()) {
