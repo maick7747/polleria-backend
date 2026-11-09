@@ -74,6 +74,7 @@ function listCategorias() {
 
 function filtrosPlatillos(query = {}) {
   const categoriaId = query.categoria_id ? parseId(query.categoria_id, 'categoria_id') : null;
+  const categoria = query.categoria ? String(query.categoria).trim().toLowerCase() : null;
   const q = query.q ? String(query.q).trim().toLowerCase() : '';
   let activo = null;
   if (query.activo !== undefined) {
@@ -84,15 +85,65 @@ function filtrosPlatillos(query = {}) {
     }
     activo = String(query.activo) === 'true' || String(query.activo) === '1';
   }
-  return { categoriaId, q, activo };
+  return { categoriaId, categoria, q, activo };
 }
 
-function aplicarFiltrosPlatillos(platillos, { categoriaId, q, activo }) {
+function aplicarFiltrosPlatillos(platillos, { categoriaId, categoria, q, activo }) {
   return platillos
     .filter((platillo) => !categoriaId || platillo.categoria_id === categoriaId)
+    .filter(
+      (platillo) =>
+        !categoria || String(platillo.categoria || '').toLowerCase() === categoria,
+    )
     .filter((platillo) => activo === null || platillo.activo === activo)
     .filter((platillo) => !q || String(platillo.nombre || '').toLowerCase().includes(q))
     .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+}
+
+function metaPlatillos(platillos) {
+  const activos = platillos.filter((platillo) => platillo.activo);
+  const categoriasMap = new Map();
+  for (const platillo of activos) {
+    const nombre = platillo.categoria || 'Sin categoría';
+    categoriasMap.set(nombre, (categoriasMap.get(nombre) || 0) + 1);
+  }
+
+  const margenes = activos.map((platillo) =>
+    db.round2(Number(platillo.precio_venta) - Number(platillo.costo_porcion)),
+  );
+  const foodCosts = activos.map((platillo) => Number(platillo.food_cost_pct) || 0);
+  const costos = activos.map((platillo) => Number(platillo.costo_porcion) || 0);
+  const promedio = (valores) =>
+    valores.length === 0 ? 0 : valores.reduce((suma, valor) => suma + valor, 0) / valores.length;
+
+  let mejor = null;
+  let menor = null;
+  for (const platillo of activos) {
+    const margen = db.round2(Number(platillo.precio_venta) - Number(platillo.costo_porcion));
+    const item = {
+      id: platillo.id,
+      nombre: platillo.nombre,
+      margen,
+      food_cost_pct: Number(platillo.food_cost_pct) || 0,
+    };
+    if (!mejor || margen > mejor.margen) {
+      mejor = item;
+    }
+    if (!menor || margen < menor.margen) {
+      menor = item;
+    }
+  }
+
+  return {
+    total_activos: activos.length,
+    categorias: [...categoriasMap.entries()].map(([nombre, total]) => ({ nombre, total })),
+    margen_promedio: db.round2(promedio(margenes)),
+    food_cost_promedio: Math.round(promedio(foodCosts) * 10) / 10,
+    costo_promedio: db.round2(promedio(costos)),
+    sobre_30: foodCosts.filter((valor) => valor > 30).length,
+    mejor,
+    menor,
+  };
 }
 
 async function listPlatillosDesdeDb(query, filtros) {
@@ -149,10 +200,17 @@ async function listPlatillosDesdeDb(query, filtros) {
     };
   });
 
-  return paginate(aplicarFiltrosPlatillos(normalizados, filtros), {
+  const resultado = paginate(aplicarFiltrosPlatillos(normalizados, filtros), {
     ...query,
     limit: query.limit || 50,
   });
+  return {
+    ...resultado,
+    meta: {
+      ...resultado.meta,
+      ...metaPlatillos(normalizados),
+    },
+  };
 }
 
 async function listPlatillos(query = {}) {
@@ -162,11 +220,15 @@ async function listPlatillos(query = {}) {
     return listPlatillosDesdeDb(query, filtros);
   }
 
-  const data = aplicarFiltrosPlatillos(store.state.platillos, filtros).map((platillo) =>
-    fichaConDetalle(platillo.id),
-  );
-
-  return paginate(data, query);
+  const normalizados = store.state.platillos.map((platillo) => fichaConDetalle(platillo.id));
+  const resultado = paginate(aplicarFiltrosPlatillos(normalizados, filtros), query);
+  return {
+    ...resultado,
+    meta: {
+      ...resultado.meta,
+      ...metaPlatillos(normalizados),
+    },
+  };
 }
 
 function crearPlatillo(body) {
