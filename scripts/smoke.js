@@ -6,6 +6,7 @@ process.env.DB_MODE = process.env.SMOKE_DB_MODE || 'memory';
 const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
+const ExcelJS = require('exceljs');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -56,6 +57,10 @@ async function request(base, method, endpoint, options = {}) {
     body = JSON.stringify(options.body);
   }
   const response = await fetch(`${base}${endpoint}`, { method, headers, body });
+  if (options.binary) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return { status: response.status, ok: response.ok, body: null, buffer, headers: response.headers };
+  }
   const text = await response.text();
   let parsed = text;
   try {
@@ -1429,6 +1434,125 @@ function resumen(value) {
     });
     if (!historialSortInvalidoOk) {
       throw new Error('Un sort inválido del historial no devolvió 400 VALIDATION_ERROR con field=sort.');
+    }
+
+    // ---- Fase 5: exportaciones reales (XLSX/PDF) ----
+    const TIPO_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+    const exportXlsx = await request(
+      base,
+      'GET',
+      '/reportes/ventas/export?formato=xlsx&desde=2020-01-01&hasta=2030-12-31',
+      { token, binary: true },
+    );
+    let libroExport = null;
+    let hojasExport = [];
+    if (exportXlsx.ok && exportXlsx.buffer) {
+      libroExport = new ExcelJS.Workbook();
+      try {
+        await libroExport.xlsx.load(exportXlsx.buffer);
+        hojasExport = libroExport.worksheets.map((hoja) => hoja.name);
+      } catch (error) {
+        libroExport = null;
+      }
+    }
+    const exportXlsxOk =
+      exportXlsx.status === 200 &&
+      String(exportXlsx.headers.get('content-type') || '').includes(TIPO_XLSX) &&
+      Number(exportXlsx.headers.get('content-length')) > 1000 &&
+      libroExport !== null &&
+      hojasExport.includes('RESUMEN') &&
+      hojasExport.includes('POR_DIA');
+    results.push({
+      name: 'GET /api/reportes/ventas/export?formato=xlsx',
+      status: exportXlsxOk ? 200 : 500,
+      detail: exportXlsxOk
+        ? `${exportXlsx.headers.get('content-type')} · ${exportXlsx.headers.get('content-length')} bytes · hojas=${hojasExport.join('+')}`
+        : JSON.stringify({
+          status: exportXlsx.status,
+          type: exportXlsx.headers.get('content-type'),
+          length: exportXlsx.headers.get('content-length'),
+          hojas: hojasExport,
+        }),
+    });
+    if (!exportXlsxOk) {
+      throw new Error('La exportación XLSX no devolvió un libro releíble con RESUMEN/POR_DIA.');
+    }
+
+    const exportPdf = await request(
+      base,
+      'GET',
+      '/reportes/ventas/export?formato=pdf&desde=2020-01-01&hasta=2030-12-31',
+      { token, binary: true },
+    );
+    const firmaPdf = exportPdf.buffer && exportPdf.buffer.subarray(0, 5).toString('latin1');
+    const exportPdfOk =
+      exportPdf.status === 200 &&
+      String(exportPdf.headers.get('content-type') || '').includes('application/pdf') &&
+      Number(exportPdf.headers.get('content-length')) > 1000 &&
+      firmaPdf === '%PDF-';
+    results.push({
+      name: 'GET /api/reportes/ventas/export?formato=pdf',
+      status: exportPdfOk ? 200 : 500,
+      detail: exportPdfOk
+        ? `${exportPdf.headers.get('content-type')} · ${exportPdf.headers.get('content-length')} bytes · firma=${firmaPdf}`
+        : JSON.stringify({
+          status: exportPdf.status,
+          type: exportPdf.headers.get('content-type'),
+          length: exportPdf.headers.get('content-length'),
+          firma: firmaPdf,
+        }),
+    });
+    if (!exportPdfOk) {
+      throw new Error('La exportación PDF no devolvió un archivo PDF válido.');
+    }
+
+    const exportInvalido = await request(base, 'GET', '/reportes/ventas/export?formato=docx', {
+      token,
+    });
+    const exportInvalidoOk =
+      exportInvalido.status === 400 &&
+      exportInvalido.body?.error?.code === 'VALIDATION_ERROR' &&
+      Array.isArray(exportInvalido.body.error.details) &&
+      exportInvalido.body.error.details.some((detalle) => detalle.field === 'formato');
+    results.push({
+      name: 'GET /api/reportes/ventas/export?formato=docx (400)',
+      status: exportInvalidoOk ? 400 : 500,
+      detail: exportInvalidoOk
+        ? `code=${exportInvalido.body.error.code} · field=formato`
+        : JSON.stringify(exportInvalido.body),
+    });
+    if (!exportInvalidoOk) {
+      throw new Error('Un formato de exportación inválido no devolvió 400 VALIDATION_ERROR con field=formato.');
+    }
+
+    const cuadreAbierto = await request(base, 'GET', '/cuadre-caja', { token });
+    const cuadreId = cuadreAbierto.body && cuadreAbierto.body.id;
+    const cuadrePdf = cuadreId
+      ? await request(base, 'GET', `/cuadre-caja/${cuadreId}/pdf`, { token, binary: true })
+      : { status: 0, headers: new Headers(), buffer: null };
+    const firmaCuadre = cuadrePdf.buffer && cuadrePdf.buffer.subarray(0, 5).toString('latin1');
+    const cuadrePdfOk =
+      Boolean(cuadreId) &&
+      cuadrePdf.status === 200 &&
+      String(cuadrePdf.headers.get('content-type') || '').includes('application/pdf') &&
+      Number(cuadrePdf.headers.get('content-length')) > 1000 &&
+      firmaCuadre === '%PDF-';
+    results.push({
+      name: 'GET /api/cuadre-caja/:id/pdf',
+      status: cuadrePdfOk ? 200 : 500,
+      detail: cuadrePdfOk
+        ? `cuadre=${cuadreId} · ${cuadrePdf.headers.get('content-length')} bytes · firma=${firmaCuadre}`
+        : JSON.stringify({
+          cuadreId: cuadreId || null,
+          status: cuadrePdf.status,
+          type: cuadrePdf.headers.get('content-type'),
+          length: cuadrePdf.headers.get('content-length'),
+          firma: firmaCuadre,
+        }),
+    });
+    if (!cuadrePdfOk) {
+      throw new Error('El PDF del cuadre de caja no se generó correctamente.');
     }
 
     console.log('\nSmoke test Fratelli\'s');
