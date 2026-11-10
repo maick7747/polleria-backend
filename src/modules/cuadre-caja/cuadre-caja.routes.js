@@ -33,7 +33,9 @@ async function configuracionNegocio() {
   }
 }
 
-router.get('/', permiso, async (req, res) => {
+// Estado de la caja del día: lo consulta también quien vende (Mozo) para saber
+// si puede tomar pedidos. Abrir, cerrar y reabrir siguen siendo de cuadre.
+router.get('/', requirePermiso('caja.cuadrar', 'venta.registrar'), async (req, res) => {
   res.json(await service.obtenerCuadre(req.query.fecha));
 });
 

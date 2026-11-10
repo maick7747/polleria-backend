@@ -1643,6 +1643,48 @@ function resumen(value) {
       throw new Error('Los turnos o el cambio de clave del usuario no funcionaron.');
     }
 
+    // ---- Mozo (solo venta.registrar): carta y estado de caja visibles ----
+    const tokenMozo = loginClaveNueva.body.token;
+    const cartaMozo = await request(base, 'GET', '/platillos?limit=100', {
+      token: tokenMozo,
+    });
+    const categoriasMozo = await request(base, 'GET', '/categorias-platillo', {
+      token: tokenMozo,
+    });
+    const cajaMozo = await request(base, 'GET', '/cuadre-caja', { token: tokenMozo });
+    const inventarioMozo = await request(base, 'GET', '/inventario', {
+      token: tokenMozo,
+    });
+    const escribirCartaMozo = await request(base, 'POST', '/platillos', {
+      token: tokenMozo,
+      body: { nombre: 'Plato no permitido', categoria_id: 1, precio: 10 },
+    });
+    const mozoOk =
+      cartaMozo.ok &&
+      Array.isArray(cartaMozo.body.data) &&
+      cartaMozo.body.data.length > 0 &&
+      categoriasMozo.ok &&
+      Array.isArray(categoriasMozo.body.data) &&
+      cajaMozo.ok &&
+      inventarioMozo.status === 403 &&
+      escribirCartaMozo.status === 403;
+    results.push({
+      name: 'Mozo: carta y caja legibles, escritura denegada',
+      status: mozoOk ? 200 : 500,
+      detail: mozoOk
+        ? `platos=${cartaMozo.body.data.length} · categorías=${categoriasMozo.body.data.length} · caja=${cajaMozo.body?.estado ?? 'sin cuadre'} · inventario=${inventarioMozo.status} · POST platillos=${escribirCartaMozo.status}`
+        : JSON.stringify({
+            carta: cartaMozo.status,
+            categorias: categoriasMozo.status,
+            caja: cajaMozo.status,
+            inventario: inventarioMozo.status,
+            escribir: escribirCartaMozo.status,
+          }),
+    });
+    if (!mozoOk) {
+      throw new Error('Un usuario Mozo no puede leer la carta o el estado de la caja.');
+    }
+
     // ---- Delivery propio: estado_entrega persistido ----
     const usuariosReparto = await request(
       base,
