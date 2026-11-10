@@ -65,6 +65,9 @@ async function buildDetalles(items) {
       precio_unitario: precio,
       subtotal: lineSubtotal,
       notas: entrada.notas,
+      estacion: platillo.estacion || 'parrilla',
+      curso: platillo.curso || 'fondo',
+      prep_min: platillo.tiempo_prep_min ?? null,
     });
   }
 
@@ -136,7 +139,7 @@ async function createPedidoRecord(options) {
     fecha_inicio_prep: null,
     fecha_listo: null,
     fecha_entrega: null,
-    estado_entrega: tipo_consumo === 'delivery' ? 'pendiente' : null,
+    estado_entrega: 'pendiente',
     creado_en: db.nowIso(),
   };
 
@@ -147,16 +150,22 @@ async function createPedidoRecord(options) {
     throw db.persistenceError('No se pudo registrar el pedido.', error);
   }
 
-  const filas = detalles.map((detail) => ({
-    pedido_id: pedido.id,
-    platillo_id: detail.platillo_id,
-    cantidad: detail.cantidad,
-    precio_unitario: detail.precio_unitario,
-    notas: detail.notas,
-    estado_preparacion: 'pendiente',
-    fecha_inicio_prep: null,
-    fecha_listo: null,
-  }));
+  const ahora = db.nowIso();
+  const filas = detalles.map((detail) => {
+    const esBar = detail.estacion === 'bar';
+    return {
+      pedido_id: pedido.id,
+      platillo_id: detail.platillo_id,
+      cantidad: detail.cantidad,
+      precio_unitario: detail.precio_unitario,
+      notas: detail.notas,
+      estado_preparacion: esBar ? 'listo' : 'pendiente',
+      fecha_inicio_prep: null,
+      fecha_listo: esBar ? ahora : null,
+      estacion: detail.estacion,
+      curso: detail.curso,
+    };
+  });
 
   let insertadas;
   try {
@@ -169,18 +178,43 @@ async function createPedidoRecord(options) {
     );
   }
 
+  // Un pedido solo de bebidas nace servido (el trigger de la migración 013
+  // hace lo mismo, pero aquí además se refleja en la respuesta).
+  const todasListas = filas.length > 0
+    && filas.every((fila) => fila.estado_preparacion === 'listo');
+  if (todasListas && estado !== 'borrador') {
+    try {
+      await repository.update('pedidos', pedido.id, { estado: 'servido', fecha_listo: ahora });
+      pedido.estado = 'servido';
+      pedido.fecha_listo = ahora;
+    } catch (error) {
+      throw db.persistenceError(
+        `El pedido ${pedido.numero} se creó pero no se pudo marcar como servido.`,
+        error,
+      );
+    }
+  }
+
   // Se reutilizan las filas insertadas para la respuesta (evita releer
   // pedido_detalles + platillos solo para armar el JSON).
   const detallesFinales = filas.map((fila, index) => {
     const insertada = insertadas[index];
     if (!insertada) {
-      return { ...fila, subtotal: detalles[index].subtotal, platillo_nombre: detalles[index].platillo_nombre };
+      return {
+        ...fila,
+        subtotal: detalles[index].subtotal,
+        platillo_nombre: detalles[index].platillo_nombre,
+        prep_min: detalles[index].prep_min,
+        entregado_en: null,
+      };
     }
     return {
       ...insertada,
       precio_unitario: Number(insertada.precio_unitario),
       subtotal: Number(insertada.subtotal),
       platillo_nombre: detalles[index].platillo_nombre,
+      prep_min: detalles[index].prep_min,
+      entregado_en: insertada.entregado_en ?? null,
     };
   });
 
@@ -204,14 +238,23 @@ async function detallesDePedido(pedidoId) {
     filters: { id: platilloIds },
     limit: platilloIds.length,
   });
-  const nombres = new Map(platillos.map((platillo) => [platillo.id, platillo.nombre]));
+  const platillosPorId = new Map(platillos.map((platillo) => [platillo.id, platillo]));
 
-  return detalles.map((detail) => ({
-    ...detail,
-    precio_unitario: Number(detail.precio_unitario),
-    subtotal: Number(detail.subtotal),
-    platillo_nombre: nombres.get(detail.platillo_id) || null,
-  }));
+  return detalles.map((detail) => {
+    const platillo = platillosPorId.get(detail.platillo_id);
+    return {
+      ...detail,
+      precio_unitario: Number(detail.precio_unitario),
+      subtotal: Number(detail.subtotal),
+      platillo_nombre: platillo ? platillo.nombre : null,
+      estacion: detail.estacion || (platillo && platillo.estacion) || 'parrilla',
+      curso: detail.curso || (platillo && platillo.curso) || 'fondo',
+      prep_min: platillo && platillo.tiempo_prep_min !== undefined
+        ? platillo.tiempo_prep_min
+        : null,
+      entregado_en: detail.entregado_en ?? null,
+    };
+  });
 }
 
 async function pedidoConDetalles(pedido, opciones = {}) {
@@ -427,8 +470,23 @@ async function enviarPedidoACocina(pedido, usuarioId) {
     fecha_inicio_prep: ahora,
   }));
 
+  let pedidoFinal = actualizado || { ...pedido, estado: 'en_cocina', fecha_inicio_prep: ahora };
+
+  // Pedido solo de bebidas: todas las líneas ya están listas, así que el
+  // pedido pasa directamente a servido.
+  const todasListas = detallesActualizados.length > 0
+    && detallesActualizados.every((detail) => detail.estado_preparacion === 'listo');
+  if (todasListas) {
+    const servido = await repository.update('pedidos', pedido.id, {
+      estado: 'servido',
+      fecha_listo: ahora,
+    });
+    pedidoFinal = servido
+      || { ...pedidoFinal, estado: 'servido', fecha_listo: ahora };
+  }
+
   return {
-    pedido: actualizado || { ...pedido, estado: 'en_cocina', fecha_inicio_prep: ahora },
+    pedido: pedidoFinal,
     movimientos,
     detalles: detallesActualizados,
   };

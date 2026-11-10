@@ -368,18 +368,18 @@ function seed() {
   }));
 
   const platilloSeed = [
-    { categoria_id: 1, nombre: 'Pollo entero a la brasa', descripcion: 'Pollo entero con papas y ensalada', precio_venta: 62 },
-    { categoria_id: 1, nombre: '1/2 Pollo a la brasa', descripcion: 'Media unidad con guarnición', precio_venta: 34 },
-    { categoria_id: 1, nombre: '1/4 Pollo a la brasa', descripcion: 'Cuarto de pollo con papas', precio_venta: 20 },
-    { categoria_id: 3, nombre: 'Papa a la huancaína', descripcion: 'Entrada tradicional', precio_venta: 14 },
-    { categoria_id: 2, nombre: 'Arroz chaufa', descripcion: 'Arroz chaufa de pollo', precio_venta: 16 },
-    { categoria_id: 2, nombre: 'Papas fritas', descripcion: 'Porción personal', precio_venta: 12 },
-    { categoria_id: 2, nombre: 'Ensalada fresca', descripcion: 'Lechuga y tomate', precio_venta: 10 },
-    { categoria_id: 4, nombre: 'Inca Kola 1.5 L', descripcion: 'Gaseosa personal', precio_venta: 12 },
-    { categoria_id: 4, nombre: 'Chicha morada 1 L', descripcion: 'Jarra de chicha', precio_venta: 10 },
-    { categoria_id: 4, nombre: 'Cerveza Cusqueña', descripcion: 'Botella 650 ml', precio_venta: 12 },
-    { categoria_id: 5, nombre: 'Mousse de maracuyá', descripcion: 'Postre individual', precio_venta: 9 },
-    { categoria_id: 3, nombre: 'Anticuchos', descripcion: 'Dos palitos con papa', precio_venta: 18 },
+    { categoria_id: 1, nombre: 'Pollo entero a la brasa', descripcion: 'Pollo entero con papas y ensalada', precio_venta: 62, estacion: 'parrilla', curso: 'fondo', tiempo_prep_min: 25 },
+    { categoria_id: 1, nombre: '1/2 Pollo a la brasa', descripcion: 'Media unidad con guarnición', precio_venta: 34, estacion: 'parrilla', curso: 'fondo', tiempo_prep_min: 20 },
+    { categoria_id: 1, nombre: '1/4 Pollo a la brasa', descripcion: 'Cuarto de pollo con papas', precio_venta: 20, estacion: 'parrilla', curso: 'fondo', tiempo_prep_min: 18 },
+    { categoria_id: 3, nombre: 'Papa a la huancaína', descripcion: 'Entrada tradicional', precio_venta: 14, estacion: 'frios', curso: 'entrada', tiempo_prep_min: 5 },
+    { categoria_id: 2, nombre: 'Arroz chaufa', descripcion: 'Arroz chaufa de pollo', precio_venta: 16, estacion: 'parrilla', curso: 'fondo', tiempo_prep_min: 8 },
+    { categoria_id: 2, nombre: 'Papas fritas', descripcion: 'Porción personal', precio_venta: 12, estacion: 'frituras', curso: 'fondo', tiempo_prep_min: 6 },
+    { categoria_id: 2, nombre: 'Ensalada fresca', descripcion: 'Lechuga y tomate', precio_venta: 10, estacion: 'frios', curso: 'fondo', tiempo_prep_min: 3 },
+    { categoria_id: 4, nombre: 'Inca Kola 1.5 L', descripcion: 'Gaseosa personal', precio_venta: 12, estacion: 'bar', curso: 'fondo', tiempo_prep_min: 0 },
+    { categoria_id: 4, nombre: 'Chicha morada 1 L', descripcion: 'Jarra de chicha', precio_venta: 10, estacion: 'bar', curso: 'fondo', tiempo_prep_min: 0 },
+    { categoria_id: 4, nombre: 'Cerveza Cusqueña', descripcion: 'Botella 650 ml', precio_venta: 12, estacion: 'bar', curso: 'fondo', tiempo_prep_min: 0 },
+    { categoria_id: 5, nombre: 'Mousse de maracuyá', descripcion: 'Postre individual', precio_venta: 9, estacion: 'frios', curso: 'postre', tiempo_prep_min: 2 },
+    { categoria_id: 3, nombre: 'Anticuchos', descripcion: 'Dos palitos con papa', precio_venta: 18, estacion: 'parrilla', curso: 'entrada', tiempo_prep_min: 8 },
   ];
 
   state.platillos = platilloSeed.map((item) => ({
@@ -586,6 +586,9 @@ function seed() {
         cantidad,
         precio_unitario: platillo.precio_venta,
         notas: item.notas || null,
+        estacion: platillo.estacion || 'parrilla',
+        curso: platillo.curso || 'fondo',
+        prep_min: platillo.tiempo_prep_min ?? null,
       };
     });
 
@@ -619,14 +622,17 @@ function seed() {
       fecha_inicio_prep,
       fecha_listo,
       fecha_entrega,
-      estado_entrega,
+      estado_entrega: estado_entrega
+        || (['en_cocina', 'servido'].includes(estado) ? 'pendiente' : null),
       stock_descontado: false,
       creado_en: fecha_pedido,
     };
     state.pedidos.push(pedido);
 
     details.forEach((detail, index) => {
-      const prepState = estados_detalle[index] || 'pendiente';
+      const prepState = detail.estacion === 'bar'
+        ? 'listo'
+        : (estados_detalle[index] || 'pendiente');
       state.pedido_detalles.push({
         id: nextId('pedido_detalles'),
         pedido_id: id,
@@ -638,6 +644,10 @@ function seed() {
         estado_preparacion: prepState,
         fecha_inicio_prep: prepState === 'pendiente' ? null : fecha_pedido,
         fecha_listo: prepState === 'listo' ? fecha_listo || isoMinutesAgo(5) : null,
+        estacion: detail.estacion,
+        curso: detail.curso,
+        entregado_en: null,
+        entregado_por_id: null,
       });
     });
 

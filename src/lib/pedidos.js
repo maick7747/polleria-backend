@@ -38,6 +38,9 @@ function buildDetalles(items) {
       precio_unitario: platillo.precio_venta,
       subtotal: lineSubtotal,
       notas,
+      estacion: platillo.estacion || 'parrilla',
+      curso: platillo.curso || 'fondo',
+      prep_min: platillo.tiempo_prep_min ?? null,
     };
   });
 
@@ -107,14 +110,16 @@ function createPedidoRecord(options) {
     fecha_inicio_prep: null,
     fecha_listo: null,
     fecha_entrega: null,
-    estado_entrega: tipo_consumo === 'delivery' ? 'pendiente' : null,
+    estado_entrega: 'pendiente',
     stock_descontado: false,
     creado_en: store.nowIso(),
   };
 
   store.state.pedidos.push(pedido);
 
+  const ahora = store.nowIso();
   for (const detail of detalles) {
+    const esBar = detail.estacion === 'bar';
     store.state.pedido_detalles.push({
       id: store.nextId('pedido_detalles'),
       pedido_id: pedido.id,
@@ -123,10 +128,23 @@ function createPedidoRecord(options) {
       precio_unitario: detail.precio_unitario,
       subtotal: detail.subtotal,
       notas: detail.notas,
-      estado_preparacion: 'pendiente',
+      estado_preparacion: esBar ? 'listo' : 'pendiente',
       fecha_inicio_prep: null,
-      fecha_listo: null,
+      fecha_listo: esBar ? ahora : null,
+      estacion: detail.estacion,
+      curso: detail.curso,
+      entregado_en: null,
+      entregado_por_id: null,
     });
+  }
+
+  // Un pedido solo de bebidas nace servido si ya se creó fuera de borrador
+  // (el flujo borrador -> enviar a cocina lo resuelve enviarPedidoACocina).
+  const lineas = store.state.pedido_detalles.filter((item) => item.pedido_id === pedido.id);
+  if (estado !== 'borrador' && lineas.length > 0
+    && lineas.every((item) => item.estado_preparacion === 'listo')) {
+    pedido.estado = 'servido';
+    pedido.fecha_listo = ahora;
   }
 
   return pedido;
@@ -140,6 +158,12 @@ function detallesDePedido(pedidoId) {
       return {
         ...detail,
         platillo_nombre: platillo ? platillo.nombre : null,
+        estacion: detail.estacion || (platillo && platillo.estacion) || 'parrilla',
+        curso: detail.curso || (platillo && platillo.curso) || 'fondo',
+        prep_min: platillo && platillo.tiempo_prep_min !== undefined
+          ? platillo.tiempo_prep_min
+          : null,
+        entregado_en: detail.entregado_en || null,
       };
     });
 }
@@ -272,6 +296,14 @@ function enviarPedidoACocina(pedido, usuarioId) {
   for (const detail of detalles) {
     detail.fecha_inicio_prep = ahora;
   }
+
+  // Pedido solo de bebidas: todas las líneas ya nacen listas, así que el
+  // pedido pasa directamente a servido (sin pasar por la cocina).
+  if (detalles.length > 0 && detalles.every((detail) => detail.estado_preparacion === 'listo')) {
+    pedido.estado = 'servido';
+    pedido.fecha_listo = ahora;
+  }
+
   return { pedido, movimientos };
 }
 

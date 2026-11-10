@@ -28,6 +28,7 @@ const FILES = [
   'migrations/010_realtime.sql',
   'migrations/011_realtime_anon_policy.sql',
   'migrations/012_cuadre_reapertura.sql',
+  'migrations/013_kds_v2_estaciones_entrega.sql',
   'seed.sql',
 ];
 
@@ -81,12 +82,18 @@ async function verificar(client) {
     resultado[nombre] = rows[0].n;
   }
 
-  console.log('\n[db:apply] Verificación:');
-  console.log(`  Tablas: ${resultado.tablas} (esperado 29)`);
-  console.log(`  ENUM:   ${resultado.enums} (esperado 25)`);
-  console.log(`  FK:     ${resultado.fks} (esperado 45)`);
+  const ESPERADO = { tablas: 29, enums: 27, fks: 46 };
 
-  if (resultado.tablas !== 29 || resultado.enums !== 25 || resultado.fks !== 45) {
+  console.log('\n[db:apply] Verificación:');
+  console.log(`  Tablas: ${resultado.tablas} (esperado ${ESPERADO.tablas})`);
+  console.log(`  ENUM:   ${resultado.enums} (esperado ${ESPERADO.enums})`);
+  console.log(`  FK:     ${resultado.fks} (esperado ${ESPERADO.fks})`);
+
+  if (
+    resultado.tablas !== ESPERADO.tablas
+    || resultado.enums !== ESPERADO.enums
+    || resultado.fks !== ESPERADO.fks
+  ) {
     console.warn(
       '\n[db:apply] ADVERTENCIA: los conteos no coinciden. Revisa si había tablas/ENUM previos o si el esquema se aplicó parcialmente.',
     );

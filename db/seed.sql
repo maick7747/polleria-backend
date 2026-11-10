@@ -172,22 +172,26 @@ INSERT INTO categorias_platillo (nombre, orden) VALUES
   ('Pollos', 1), ('Guarniciones', 2), ('Entradas', 3), ('Bebidas', 4), ('Postres', 5)
 ON CONFLICT (nombre) DO NOTHING;
 
-INSERT INTO platillos (categoria_id, nombre, descripcion, precio_venta)
-SELECT c.id, v.nombre, v.descripcion, v.precio
+INSERT INTO platillos (
+  categoria_id, nombre, descripcion, precio_venta,
+  estacion, curso, tiempo_prep_min
+)
+SELECT c.id, v.nombre, v.descripcion, v.precio,
+       v.estacion::enum_estacion, v.curso::enum_curso, v.tiempo_prep_min
 FROM (VALUES
-  ('Pollos',      'Pollo entero a la brasa', 'Pollo entero con papas y ensalada', 62.00),
-  ('Pollos',      '1/2 Pollo a la brasa',    'Media unidad con guarnición',       34.00),
-  ('Pollos',      '1/4 Pollo a la brasa',    'Cuarto de pollo con papas',         20.00),
-  ('Entradas',    'Papa a la huancaína',     'Entrada tradicional',               14.00),
-  ('Guarniciones','Arroz chaufa',            'Arroz chaufa de pollo',             16.00),
-  ('Guarniciones','Papas fritas',            'Porción personal',                  12.00),
-  ('Guarniciones','Ensalada fresca',         'Lechuga y tomate',                  10.00),
-  ('Bebidas',     'Inca Kola 1.5 L',         'Gaseosa personal',                  12.00),
-  ('Bebidas',     'Chicha morada 1 L',       'Jarra de chicha',                   10.00),
-  ('Bebidas',     'Cerveza Cusqueña',        'Botella 650 ml',                    12.00),
-  ('Postres',     'Mousse de maracuyá',      'Postre individual',                  9.00),
-  ('Entradas',    'Anticuchos',              'Dos palitos con papa',              18.00)
-) AS v(categoria, nombre, descripcion, precio)
+  ('Pollos',      'Pollo entero a la brasa', 'Pollo entero con papas y ensalada', 62.00, 'parrilla', 'fondo',   25),
+  ('Pollos',      '1/2 Pollo a la brasa',    'Media unidad con guarnición',       34.00, 'parrilla', 'fondo',   20),
+  ('Pollos',      '1/4 Pollo a la brasa',    'Cuarto de pollo con papas',         20.00, 'parrilla', 'fondo',   18),
+  ('Entradas',    'Papa a la huancaína',     'Entrada tradicional',               14.00, 'frios',    'entrada',  5),
+  ('Guarniciones','Arroz chaufa',            'Arroz chaufa de pollo',             16.00, 'parrilla', 'fondo',    8),
+  ('Guarniciones','Papas fritas',            'Porción personal',                  12.00, 'frituras', 'fondo',    6),
+  ('Guarniciones','Ensalada fresca',         'Lechuga y tomate',                  10.00, 'frios',    'fondo',    3),
+  ('Bebidas',     'Inca Kola 1.5 L',         'Gaseosa personal',                  12.00, 'bar',      'fondo',    0),
+  ('Bebidas',     'Chicha morada 1 L',       'Jarra de chicha',                   10.00, 'bar',      'fondo',    0),
+  ('Bebidas',     'Cerveza Cusqueña',        'Botella 650 ml',                    12.00, 'bar',      'fondo',    0),
+  ('Postres',     'Mousse de maracuyá',      'Postre individual',                  9.00, 'frios',    'postre',   2),
+  ('Entradas',    'Anticuchos',              'Dos palitos con papa',              18.00, 'parrilla', 'entrada',  8)
+) AS v(categoria, nombre, descripcion, precio, estacion, curso, tiempo_prep_min)
 JOIN categorias_platillo c ON c.nombre = v.categoria
 WHERE NOT EXISTS (SELECT 1 FROM platillos p WHERE p.nombre = v.nombre);
 
@@ -272,7 +276,7 @@ INSERT INTO pedidos (
   repartidor_id, usuario_cajero_id, estado, estado_pago, metodo_pago,
   subtotal, igv, total, comision_plataforma, costo_delivery,
   direccion_entrega, referencia_entrega, observaciones, comprobante_tipo,
-  fecha_inicio_prep, fecha_listo, fecha_entrega
+  estado_entrega, fecha_inicio_prep, fecha_listo, fecha_entrega
 )
 SELECT
   v.numero,
@@ -290,38 +294,40 @@ SELECT
   v.subtotal, v.igv, v.total, v.comision, v.costo_delivery,
   v.direccion, v.referencia, v.observaciones,
   v.comprobante::enum_comprobante_tipo,
+  v.estado_entrega,
   CASE WHEN v.inicio_min  IS NULL THEN NULL ELSE now() - (v.inicio_min  || ' minutes')::interval END,
   CASE WHEN v.listo_min   IS NULL THEN NULL ELSE now() - (v.listo_min   || ' minutes')::interval END,
   CASE WHEN v.entrega_min IS NULL THEN NULL ELSE now() - (v.entrega_min || ' minutes')::interval END
 FROM (VALUES
   ('PED-2026-000001','local','sala',3,NULL::text,NULL::text,'servido','pendiente','',
-   86.00,15.48,101.48,0.00,0.00,NULL::text,NULL::text,'Sin cebolla en la ensalada','boleta',
-   65,60,35,NULL::int),
+    86.00,15.48,101.48,0.00,0.00,NULL::text,NULL::text,'Sin cebolla en la ensalada','boleta',
+    65,60,35,NULL::int,'pendiente'),
   ('PED-2026-000002','local','sala',3,NULL::text,NULL::text,'en_cocina','pendiente','',
-   16.00,0.00,16.00,0.00,0.00,NULL::text,NULL::text,'Ronda adicional','boleta',
-   18,15,NULL::int,NULL::int),
+    16.00,0.00,16.00,0.00,0.00,NULL::text,NULL::text,'Ronda adicional','boleta',
+    18,15,NULL::int,NULL::int,'pendiente'),
   ('PED-2026-000003','local','sala',5,NULL::text,NULL::text,'servido','pendiente','',
-   78.00,14.04,92.04,0.00,0.00,NULL::text,NULL::text,NULL::text,'boleta',
-   140,135,110,NULL::int),
+    78.00,14.04,92.04,0.00,0.00,NULL::text,NULL::text,NULL::text,'boleta',
+    140,135,110,NULL::int,'pendiente'),
   ('PED-2026-000004','local','sala',8,NULL::text,NULL::text,'en_cocina','pendiente','',
-   30.00,0.00,30.00,0.00,0.00,NULL::text,NULL::text,NULL::text,'boleta',
-   12,10,NULL::int,NULL::int),
+    30.00,0.00,30.00,0.00,0.00,NULL::text,NULL::text,NULL::text,'boleta',
+    12,10,NULL::int,NULL::int,'pendiente'),
   ('PED-2026-000005','whatsapp','delivery',NULL::int,'87654321','repartidor@fratellis.pe',
    'servido','contraentrega_pendiente','',
-   40.00,0.00,45.00,0.00,5.00,'Jr. Puno 120','Portón negro',NULL::text,'ticket',
-   50,45,25,NULL::int),
+    40.00,0.00,45.00,0.00,5.00,'Jr. Puno 120','Portón negro',NULL::text,'ticket',
+    50,45,25,NULL::int,'en_camino'),
   ('PED-2026-000006','rappi','delivery',NULL::int,NULL::text,NULL::text,'en_cocina','pendiente','',
-   62.00,0.00,62.00,15.50,0.00,'Av. Huancavelica 250',NULL::text,NULL::text,'ticket',
-   24,20,NULL::int,NULL::int),
+    62.00,0.00,62.00,15.50,0.00,'Av. Huancavelica 250',NULL::text,NULL::text,'ticket',
+    24,20,NULL::int,NULL::int,'pendiente'),
   ('PED-2026-000007','local','para_llevar',NULL::int,NULL::text,NULL::text,'borrador','pendiente','',
-   12.00,0.00,12.00,0.00,0.00,NULL::text,NULL::text,'Para recoger a las 20:30','ticket',
-   5,NULL::int,NULL::int,NULL::int),
+    12.00,0.00,12.00,0.00,0.00,NULL::text,NULL::text,'Para recoger a las 20:30','ticket',
+    5,NULL::int,NULL::int,NULL::int,NULL::text),
   ('PED-2026-000008','local','para_llevar',NULL::int,NULL::text,NULL::text,'cobrado','pagado','efectivo',
-   23.00,0.00,23.00,0.00,0.00,NULL::text,NULL::text,NULL::text,'ticket',
-   180,175,160,150)
+    23.00,0.00,23.00,0.00,0.00,NULL::text,NULL::text,NULL::text,'ticket',
+    180,175,160,150,'entregado')
 ) AS v(numero, canal, tipo_consumo, mesa_numero, cliente_doc, repartidor_email,
        estado, estado_pago, metodo_pago, subtotal, igv, total, comision, costo_delivery,
-       direccion, referencia, observaciones, comprobante, minutos, inicio_min, listo_min, entrega_min)
+       direccion, referencia, observaciones, comprobante, minutos, inicio_min, listo_min, entrega_min,
+       estado_entrega)
 LEFT JOIN mesas m    ON m.numero = v.mesa_numero
 LEFT JOIN cuentas c  ON c.mesa_id = m.id AND c.estado = 'abierta'
 LEFT JOIN clientes cl ON cl.numero_documento = v.cliente_doc AND cl.tipo_documento = 'DNI'

@@ -693,6 +693,245 @@ function resumen(value) {
       );
     }
 
+    // ---- KDS v2: estaciones, cursos, all-day y entrega por línea ----
+    const cartaKds = await request(base, 'GET', '/platillos?limit=100', { token });
+    const platillosKds = Array.isArray(cartaKds.body && cartaKds.body.data)
+      ? cartaKds.body.data
+      : [];
+    const porNombreKds = new Map(platillosKds.map((item) => [item.nombre, item]));
+    const polloKds = porNombreKds.get('1/4 Pollo a la brasa');
+    const bebidaKds = porNombreKds.get('Inca Kola 1.5 L');
+    if (!cartaKds.ok || !polloKds || !bebidaKds) {
+      throw new Error('El menú no expone los platillos necesarios para el smoke del KDS v2.');
+    }
+
+    const rondaKds = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
+      token,
+      body: {
+        items: [
+          { platillo_id: polloKds.id, cantidad: 1 },
+          { platillo_id: bebidaKds.id, cantidad: 1 },
+        ],
+        idempotency_key: `smoke-${Date.now()}-kds-mixto`,
+        enviar_cocina: true,
+      },
+    });
+    const kds1 = await request(base, 'GET', '/kds/pedidos', { token });
+    const pedidoKds1 = (kds1.body.data || []).find((pedido) => pedido.id === rondaKds.body.id);
+    const lineaBebida = pedidoKds1
+      ? pedidoKds1.detalles.find((detalle) => detalle.platillo_id === bebidaKds.id)
+      : null;
+    const lineaPollo = pedidoKds1
+      ? pedidoKds1.detalles.find((detalle) => detalle.platillo_id === polloKds.id)
+      : null;
+    const bandeja1 = await request(base, 'GET', '/pedidos-listos?page=1&limit=100&desde=2026-01-01', {
+      token,
+    });
+    const enBandeja1 = (bandeja1.body.data || []).some((pedido) => pedido.id === rondaKds.body.id);
+    const bebidaNaceListaOk =
+      rondaKds.status === 201 &&
+      Boolean(pedidoKds1) &&
+      Boolean(lineaBebida) &&
+      Boolean(lineaPollo) &&
+      lineaBebida.estado_preparacion === 'listo' &&
+      lineaBebida.estacion === 'bar' &&
+      lineaBebida.curso === 'fondo' &&
+      lineaPollo.estado_preparacion !== 'listo' &&
+      lineaPollo.estacion === 'parrilla' &&
+      pedidoKds1.listo === false &&
+      pedidoKds1.todos_entregados === false &&
+      pedidoKds1.estado_entrega === 'pendiente' &&
+      !enBandeja1;
+    results.push({
+      name: 'KDS v2: bebida nace lista y no bloquea',
+      status: bebidaNaceListaOk ? 200 : 500,
+      detail: bebidaNaceListaOk
+        ? `pedido=${rondaKds.body.id} · bebida=${lineaBebida.estado_preparacion}/bar · pollo=${lineaPollo.estado_preparacion}`
+        : JSON.stringify({ ronda: rondaKds.body, pedidoKds: pedidoKds1, enBandeja: enBandeja1 }),
+    });
+    if (!bebidaNaceListaOk) {
+      throw new Error(
+        `La bebida no nació lista ni quedó fuera de la bandeja: ${JSON.stringify({ pedidoKds: pedidoKds1, enBandeja: enBandeja1 })}`,
+      );
+    }
+
+    const allDayKds1 = kds1.body.meta && kds1.body.meta.all_day;
+    const sumaAllDayKds1 = (kds1.body.data || [])
+      .filter((pedido) => pedido.estado_pago !== 'pagado' && !pedido.entregado_en)
+      .reduce(
+        (total, pedido) => total + pedido.detalles
+          .filter((detalle) => !detalle.entregado_en)
+          .reduce((suma, detalle) => suma + Number(detalle.cantidad), 0),
+        0,
+      );
+    const allDayOk =
+      Array.isArray(allDayKds1) &&
+      typeof kds1.body.meta.all_day_total === 'number' &&
+      kds1.body.meta.all_day_total === sumaAllDayKds1 &&
+      allDayKds1.every(
+        (fila) =>
+          typeof fila.platillo_id === 'number' &&
+          typeof fila.estacion === 'string' &&
+          typeof fila.cantidad === 'number' &&
+          typeof fila.en_fuego === 'number',
+      );
+    results.push({
+      name: 'GET /api/kds/pedidos (all-day coherente)',
+      status: allDayOk ? 200 : 500,
+      detail: allDayOk
+        ? `${allDayKds1.length} platos · total=${kds1.body.meta.all_day_total}`
+        : JSON.stringify({ allDay: allDayKds1, total: kds1.body.meta && kds1.body.meta.all_day_total, suma: sumaAllDayKds1 }),
+    });
+    if (!allDayOk) {
+      throw new Error('El all-day del KDS no coincide con las líneas activas no entregadas.');
+    }
+
+    const rondaIncompleta = await request(base, 'PATCH', `/kds/pedidos/${rondaKds.body.id}/entregar`, {
+      token,
+      body: {},
+    });
+    const detallesPendientes = rondaIncompleta.body?.error?.details;
+    const rondaIncompletaOk =
+      rondaIncompleta.status === 409 &&
+      rondaIncompleta.body?.error?.code === 'PLATOS_PENDIENTES' &&
+      Array.isArray(detallesPendientes) &&
+      detallesPendientes.some((detalle) => typeof detalle.pendientes === 'number' && detalle.pendientes > 0);
+    results.push({
+      name: 'PATCH /api/kds/pedidos/:id/entregar (409 PLATOS_PENDIENTES)',
+      status: rondaIncompletaOk ? 409 : 500,
+      detail: rondaIncompletaOk
+        ? `code=${rondaIncompleta.body.error.code} · pendientes=${detallesPendientes[0].pendientes}`
+        : JSON.stringify(rondaIncompleta.body),
+    });
+    if (!rondaIncompletaOk) {
+      throw new Error(
+        `Entregar una ronda incompleta debía devolver 409 PLATOS_PENDIENTES: ${JSON.stringify(rondaIncompleta.body)}`,
+      );
+    }
+
+    const entregaLineaKds = await request(
+      base,
+      'PATCH',
+      `/kds/pedidos/${rondaKds.body.id}/platos/${lineaBebida.id}/entregar`,
+      { token, body: {} },
+    );
+    const kds2 = await request(base, 'GET', '/kds/pedidos', { token });
+    const pedidoKds2 = (kds2.body.data || []).find((pedido) => pedido.id === rondaKds.body.id);
+    const lineaBebida2 = pedidoKds2
+      ? pedidoKds2.detalles.find((detalle) => detalle.id === lineaBebida.id)
+      : null;
+    const entregaLineaOk =
+      entregaLineaKds.status === 200 &&
+      entregaLineaKds.body?.pedido_estado_entrega === 'pendiente' &&
+      entregaLineaKds.body?.todos_entregados === false &&
+      Boolean(entregaLineaKds.body?.detalle?.entregado_en) &&
+      Boolean(lineaBebida2) &&
+      Boolean(lineaBebida2.entregado_en) &&
+      pedidoKds2.todos_entregados === false;
+    results.push({
+      name: 'PATCH /api/kds/.../platos/:detalleId/entregar (línea)',
+      status: entregaLineaOk ? 200 : 500,
+      detail: entregaLineaOk
+        ? `detalle=${lineaBebida.id} · entregado_en=${entregaLineaKds.body.detalle.entregado_en}`
+        : JSON.stringify({ respuesta: entregaLineaKds.body, pedidoKds: pedidoKds2 }),
+    });
+    if (!entregaLineaOk) {
+      throw new Error('La entrega de una línea no persistió en el KDS.');
+    }
+
+    const todoListoKds = await request(base, 'PATCH', `/kds/pedidos/${rondaKds.body.id}/listo`, {
+      token,
+      body: {},
+    });
+    const bandeja2 = await request(base, 'GET', '/pedidos-listos?page=1&limit=100&desde=2026-01-01', {
+      token,
+    });
+    const pedidoBandeja2 = (bandeja2.body.data || []).find((pedido) => pedido.id === rondaKds.body.id);
+    const todoListoOk =
+      todoListoKds.status === 200 &&
+      todoListoKds.body?.estado === 'servido' &&
+      todoListoKds.body?.todas_listas === true &&
+      Boolean(pedidoBandeja2) &&
+      pedidoBandeja2.todos_entregados === false;
+    results.push({
+      name: 'PATCH /api/kds/pedidos/:id/listo (pedido servido)',
+      status: todoListoOk ? 200 : 500,
+      detail: todoListoOk
+        ? `pedido=${rondaKds.body.id} · estado=${todoListoKds.body.estado} · en bandeja`
+        : JSON.stringify({ todoListo: todoListoKds.body, bandeja: pedidoBandeja2 }),
+    });
+    if (!todoListoOk) {
+      throw new Error('El atajo "todo listo" no dejó el pedido servido en la bandeja.');
+    }
+
+    const entregaRestoKds = await request(
+      base,
+      'PATCH',
+      `/kds/pedidos/${rondaKds.body.id}/platos/${lineaPollo.id}/entregar`,
+      { token, body: {} },
+    );
+    const kds3 = await request(base, 'GET', '/kds/pedidos', { token });
+    const pedidoKds3 = (kds3.body.data || []).find((pedido) => pedido.id === rondaKds.body.id);
+    const bandeja3 = await request(base, 'GET', '/pedidos-listos?page=1&limit=100&desde=2026-01-01', {
+      token,
+    });
+    const enBandeja3 = (bandeja3.body.data || []).some((pedido) => pedido.id === rondaKds.body.id);
+    const entregaTotalOk =
+      entregaRestoKds.status === 200 &&
+      entregaRestoKds.body?.todos_entregados === true &&
+      entregaRestoKds.body?.pedido_estado_entrega === 'entregado' &&
+      Boolean(pedidoKds3) &&
+      pedidoKds3.todos_entregados === true &&
+      pedidoKds3.estado_entrega === 'entregado' &&
+      !enBandeja3;
+    results.push({
+      name: 'Entrega completa: sale de /pedidos-listos',
+      status: entregaTotalOk ? 200 : 500,
+      detail: entregaTotalOk
+        ? `pedido=${rondaKds.body.id} · estado_entrega=entregado · fuera de la bandeja`
+        : JSON.stringify({ respuesta: entregaRestoKds.body, pedidoKds: pedidoKds3, enBandeja: enBandeja3 }),
+    });
+    if (!entregaTotalOk) {
+      throw new Error('El pedido totalmente entregado siguió apareciendo en /pedidos-listos.');
+    }
+
+    const rondaBebidas = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
+      token,
+      body: {
+        items: [{ platillo_id: bebidaKds.id, cantidad: 2 }],
+        idempotency_key: `smoke-${Date.now()}-kds-bebidas`,
+        enviar_cocina: true,
+      },
+    });
+    const kdsBebidas = await request(base, 'GET', '/kds/pedidos', { token });
+    const pedidoBebidas = (kdsBebidas.body.data || [])
+      .find((pedido) => pedido.id === rondaBebidas.body.id);
+    const bandejaBebidas = await request(
+      base,
+      'GET',
+      '/pedidos-listos?page=1&limit=100&desde=2026-01-01',
+      { token },
+    );
+    const pedidoBebidasBandeja = (bandejaBebidas.body.data || [])
+      .find((pedido) => pedido.id === rondaBebidas.body.id);
+    const soloBebidasOk =
+      rondaBebidas.status === 201 &&
+      Boolean(pedidoBebidas) &&
+      pedidoBebidas.estado === 'servido' &&
+      pedidoBebidas.listo === true &&
+      pedidoBebidas.todos_entregados === false &&
+      Boolean(pedidoBebidasBandeja);
+    results.push({
+      name: 'KDS v2: pedido solo de bebidas nace servido',
+      status: soloBebidasOk ? 200 : 500,
+      detail: soloBebidasOk
+        ? `pedido=${rondaBebidas.body.id} · estado=servido · bandeja OK`
+        : JSON.stringify({ creado: rondaBebidas.body, pedidoKds: pedidoBebidas, bandeja: pedidoBebidasBandeja }),
+    });
+    if (!soloBebidasOk) {
+      throw new Error('Un pedido solo de bebidas no quedó servido ni apareció en la bandeja.');
+    }
+
     const documentoSmoke = '99999999';
     const clientePatch = await request(base, 'PATCH', `/cuentas/${cuentaId}/cliente`, {
       token,
