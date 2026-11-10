@@ -510,15 +510,29 @@ async function createCuenta(body, usuario) {
   return resumenCuenta(cuenta);
 }
 
+// Datos de cobro de la cuenta: cliente y tipo de comprobante. Se capturan al
+// cerrar la cuenta (no al abrir la mesa), que es cuando el cliente decide qué
+// comprobante necesita.
+const COMPROBANTES = ['ticket', 'boleta', 'ninguno'];
+
 async function attachCliente(cuentaId, body) {
   const id = parseId(cuentaId);
   const payload = requiredObject(body);
 
-  if (payload.cliente === undefined) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'El cliente es obligatorio.', [
-      { field: 'cliente' },
-    ]);
+  const tieneCliente = payload.cliente !== undefined && payload.cliente !== null;
+  const tieneComprobante = payload.comprobante_tipo !== undefined
+    && payload.comprobante_tipo !== null;
+  if (!tieneCliente && !tieneComprobante) {
+    throw new AppError(
+      400,
+      'VALIDATION_ERROR',
+      'Envía el cliente o el tipo de comprobante.',
+      [{ field: 'cliente' }],
+    );
   }
+  const comprobanteTipo = tieneComprobante
+    ? requiredEnum(payload.comprobante_tipo, 'comprobante_tipo', COMPROBANTES)
+    : null;
 
   if (!db.isSupabase()) {
     const cuenta = store.findOrThrow('cuentas', id, 'Cuenta');
@@ -526,8 +540,12 @@ async function attachCliente(cuentaId, body) {
       throw new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
     }
 
-    const clienteId = await resolverCliente(payload.cliente, cuenta.cliente_id);
-    cuenta.cliente_id = clienteId;
+    if (tieneCliente) {
+      cuenta.cliente_id = await resolverCliente(payload.cliente, cuenta.cliente_id);
+    }
+    if (comprobanteTipo) {
+      cuenta.comprobante_tipo = comprobanteTipo;
+    }
     return resumenCuentaSync(cuenta);
   }
 
@@ -536,16 +554,22 @@ async function attachCliente(cuentaId, body) {
     throw new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
   }
 
-  const clienteId = await resolverCliente(payload.cliente, cuenta.cliente_id);
+  const patch = {};
+  if (tieneCliente) {
+    patch.cliente_id = await resolverCliente(payload.cliente, cuenta.cliente_id);
+  }
+  if (comprobanteTipo) {
+    patch.comprobante_tipo = comprobanteTipo;
+  }
 
   let actualizada;
   try {
-    actualizada = await repository.update('cuentas', cuenta.id, { cliente_id: clienteId });
+    actualizada = await repository.update('cuentas', cuenta.id, patch);
   } catch (error) {
-    throw db.persistenceError('No se pudo asociar el cliente a la cuenta.', error);
+    throw db.persistenceError('No se pudieron guardar los datos de cobro de la cuenta.', error);
   }
 
-  return resumenCuenta(actualizada || { ...cuenta, cliente_id: clienteId });
+  return resumenCuenta(actualizada || { ...cuenta, ...patch });
 }
 
 // Ajusta cuentas.total en una sola operacion atomica cuando la RPC existe

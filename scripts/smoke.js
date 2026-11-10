@@ -942,6 +942,7 @@ function resumen(value) {
           numero_documento: documentoSmoke,
           telefono: '999999999',
         },
+        comprobante_tipo: 'boleta',
       },
     });
     const detalleCliente = await request(base, 'GET', `/cuentas/${cuentaId}`, { token });
@@ -949,6 +950,7 @@ function resumen(value) {
     const clienteOk =
       clientePatch.ok &&
       clientePatch.body.cliente_id != null &&
+      clientePatch.body.comprobante_tipo === 'boleta' &&
       clientePatch.body.cliente &&
       clientePatch.body.cliente.nombre === 'Cliente Smoke' &&
       detalleCliente.ok &&
@@ -956,10 +958,10 @@ function resumen(value) {
       clienteGuardado.nombre === 'Cliente Smoke' &&
       String(clienteGuardado.numero_documento) === documentoSmoke;
     results.push({
-      name: 'PATCH /api/cuentas/:id/cliente',
+      name: 'PATCH /api/cuentas/:id/cliente (cliente + comprobante)',
       status: clienteOk ? 200 : 500,
       detail: clienteOk
-        ? `cliente_id=${clientePatch.body.cliente_id}, ${clienteGuardado.nombre}`
+        ? `cliente_id=${clientePatch.body.cliente_id}, ${clienteGuardado.nombre} · ${clientePatch.body.comprobante_tipo}`
         : `patch=${clientePatch.status}, detalle=${JSON.stringify(clienteGuardado)}`,
     });
     if (!clienteOk) {
