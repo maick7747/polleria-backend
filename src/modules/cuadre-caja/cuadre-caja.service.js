@@ -47,15 +47,27 @@ async function totalPagosSupabase(fecha) {
   const pagos = await leerTodas(
     () => repository
       .table('pagos')
-      .select('monto')
+      .select('monto, metodo')
       .gte('fecha', start)
       .lt('fecha', end)
       .order('id', { ascending: true }),
     'No se pudieron leer los pagos del día.',
   );
-  return store.round2(
-    pagos.reduce((sum, pago) => sum + Number(pago.monto), 0),
-  );
+  let efectivo = 0;
+  let digital = 0;
+  for (const pago of pagos) {
+    const monto = Number(pago.monto) || 0;
+    if (pago.metodo === 'efectivo') {
+      efectivo += monto;
+    } else {
+      digital += monto;
+    }
+  }
+  return {
+    total: store.round2(efectivo + digital),
+    efectivo: store.round2(efectivo),
+    digital: store.round2(digital),
+  };
 }
 
 async function totalReembolsosSupabase(fecha) {
@@ -77,15 +89,24 @@ async function totalReembolsosSupabase(fecha) {
 
 async function resumenDe(fecha, fondoInicial, efectivoContado = null, pagosDigitales = 0) {
   let totalVentas;
+  let ventasEfectivo;
+  let ventasDigital;
   let totalGastos;
   let totalReembolsos;
 
   if (!db.isSupabase()) {
-    totalVentas = store.round2(
-      store.state.pagos
-        .filter((pago) => pago.fecha.slice(0, 10) === fecha)
+    const pagosDia = store.state.pagos.filter((pago) => pago.fecha.slice(0, 10) === fecha);
+    ventasEfectivo = store.round2(
+      pagosDia
+        .filter((pago) => pago.metodo === 'efectivo')
         .reduce((sum, pago) => sum + pago.monto, 0),
     );
+    ventasDigital = store.round2(
+      pagosDia
+        .filter((pago) => pago.metodo !== 'efectivo')
+        .reduce((sum, pago) => sum + pago.monto, 0),
+    );
+    totalVentas = store.round2(ventasEfectivo + ventasDigital);
     totalGastos = store.round2(
       store.state.gastos
         .filter((gasto) => gasto.fecha === fecha)
@@ -109,7 +130,9 @@ async function resumenDe(fecha, fondoInicial, efectivoContado = null, pagosDigit
       ),
       totalReembolsosSupabase(fecha),
     ]);
-    totalVentas = ventas;
+    totalVentas = ventas.total;
+    ventasEfectivo = ventas.efectivo;
+    ventasDigital = ventas.digital;
     totalGastos = store.round2(
       gastos.reduce((sum, gasto) => sum + Number(gasto.monto), 0),
     );
@@ -118,21 +141,37 @@ async function resumenDe(fecha, fondoInicial, efectivoContado = null, pagosDigit
 
   const totalEgresos = store.round2(totalGastos + totalReembolsos);
   const montoEsperado = store.round2(Number(fondoInicial) + totalVentas - totalEgresos);
+  // Desglose por canal: el efectivo esperado incluye el fondo y descuenta los
+  // egresos (que salen del cajón); lo digital solo refleja cobros digitales.
+  const esperadoEfectivo = store.round2(Number(fondoInicial) + ventasEfectivo - totalEgresos);
+  const esperadoDigital = store.round2(ventasDigital);
   const totalReal = efectivoContado === null
     ? null
     : store.round2(Number(efectivoContado) + Number(pagosDigitales));
   const diferencia = totalReal === null ? null : store.round2(totalReal - montoEsperado);
+  const diferenciaEfectivo = efectivoContado === null
+    ? null
+    : store.round2(Number(efectivoContado) - esperadoEfectivo);
+  const diferenciaDigital = efectivoContado === null
+    ? null
+    : store.round2(Number(pagosDigitales) - esperadoDigital);
 
   return {
     total_ventas: totalVentas,
+    ventas_efectivo: ventasEfectivo,
+    ventas_digital: ventasDigital,
     total_gastos: totalGastos,
     total_reembolsos: totalReembolsos,
     total_egresos: totalEgresos,
     monto_esperado: montoEsperado,
+    esperado_efectivo: esperadoEfectivo,
+    esperado_digital: esperadoDigital,
     efectivo_contado: efectivoContado,
     pagos_digitales: store.round2(pagosDigitales),
     total_real: totalReal,
     diferencia,
+    diferencia_efectivo: diferenciaEfectivo,
+    diferencia_digital: diferenciaDigital,
     alerta: diferencia !== null && Math.abs(diferencia) > 0.009,
   };
 }
