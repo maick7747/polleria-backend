@@ -215,14 +215,20 @@ function esAdmin(usuario) {
   return roles.includes('Dueño/Admin') || roles.includes('Admin');
 }
 
-async function contarCuentasAbiertas() {
+async function contarCuentasAbiertas(fecha = store.today()) {
+  const dia = String(fecha).slice(0, 10);
   if (!db.isSupabase()) {
-    return store.state.cuentas.filter((cuenta) => cuenta.estado === 'abierta').length;
+    return store.state.cuentas.filter(
+      (cuenta) => cuenta.estado === 'abierta' && store.fechaDe(cuenta.fecha_apertura) === dia,
+    ).length;
   }
+  const { start, end } = rangoDia(dia);
   const { count, error } = await repository
     .table('cuentas')
     .select('id', { count: 'exact', head: true })
-    .eq('estado', 'abierta');
+    .eq('estado', 'abierta')
+    .gte('fecha_apertura', start)
+    .lt('fecha_apertura', end);
   if (error) {
     throw db.persistenceError('No se pudieron contar las cuentas abiertas.', error);
   }
@@ -238,13 +244,14 @@ async function validarCierrePermitido(cuadre, usuario) {
     );
   }
 
-  const cantidad = await contarCuentasAbiertas();
+  const fecha = String(cuadre.fecha).slice(0, 10);
+  const cantidad = await contarCuentasAbiertas(fecha);
   if (cantidad > 0) {
     throw new AppError(
       409,
       'CUENTAS_ABIERTAS',
-      `Hay ${cantidad} cuentas abiertas. Cóbralas o cancélalas antes de cerrar la caja.`,
-      [{ cantidad }],
+      `Hay ${cantidad} cuentas abiertas del ${fecha}. Cóbralas o cancélalas antes de cerrar la caja.`,
+      [{ cantidad, fecha }],
     );
   }
 }

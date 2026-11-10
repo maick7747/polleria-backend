@@ -184,7 +184,9 @@ async function cobrarCuenta(id, body, usuario) {
     }
 
     const metodo = requiredEnum(payload.metodo, 'metodo', METODOS);
-    store.requireCajaAbierta();
+    // La caja que respalda el cobro es la del día operativo de la cuenta:
+    // permite cerrar cuentas heredadas de una caja anterior aún abierta.
+    store.requireCajaAbierta(store.fechaDe(cuenta.fecha_apertura));
 
     const rondas = store.state.pedidos
       .filter((pedido) => pedido.cuenta_id === cuenta.id && pedido.estado !== 'cancelado')
@@ -265,7 +267,8 @@ async function cobrarCuenta(id, body, usuario) {
   }
 
   const metodo = requiredEnum(payload.metodo, 'metodo', METODOS);
-  await db.requireCajaAbierta();
+  // Idem rama Supabase: la caja del día operativo de la cuenta, no la de hoy.
+  await db.requireCajaAbierta(store.fechaDe(cuenta.fecha_apertura));
 
   const rondas = await rondasDeCuenta(cuenta.id);
   if (rondas.length === 0) {

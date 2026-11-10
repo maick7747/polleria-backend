@@ -34,6 +34,20 @@ function today() {
   return nowIso().slice(0, 10);
 }
 
+// Fecha de calendario (America/Lima, YYYY-MM-DD) de un instante ISO.
+// Sirve para saber a qué día operativo pertenece una cuenta abierta,
+// sin importar si el instante viene en UTC (Supabase) o con offset -05:00.
+function fechaDe(iso) {
+  if (!iso) {
+    return today();
+  }
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) {
+    return today();
+  }
+  return isoFromDate(fecha).slice(0, 10);
+}
+
 function dateInDays(days) {
   return isoFromDate(new Date(Date.now() + days * 86400000)).slice(0, 10);
 }
@@ -956,6 +970,7 @@ module.exports = {
   round3,
   nowIso,
   today,
+  fechaDe,
   isoMinutesAgo,
   isoDaysAgo,
   dateInDays,
