@@ -1663,10 +1663,19 @@ function resumen(value) {
       token: tokenMozo,
       body: { nombre: 'Plato no permitido', categoria_id: 1, precio: 10 },
     });
+    // La carta trae la disponibilidad real (misma cuenta que el stock) para que
+    // el mozo vea "sin stock" sin permiso de inventario.
+    const conFicha = (cartaMozo.body.data || []).filter(
+      (plato) => Array.isArray(plato.ingredientes) && plato.ingredientes.length > 0,
+    );
+    const disponibilidadOk =
+      conFicha.length > 0 &&
+      conFicha.every((plato) => typeof plato.disponible === 'boolean');
     const mozoOk =
       cartaMozo.ok &&
       Array.isArray(cartaMozo.body.data) &&
       cartaMozo.body.data.length > 0 &&
+      disponibilidadOk &&
       categoriasMozo.ok &&
       Array.isArray(categoriasMozo.body.data) &&
       cajaMozo.ok &&
@@ -1676,9 +1685,10 @@ function resumen(value) {
       name: 'Mozo: carta y caja legibles, escritura denegada',
       status: mozoOk ? 200 : 500,
       detail: mozoOk
-        ? `platos=${cartaMozo.body.data.length} · categorías=${categoriasMozo.body.data.length} · caja=${cajaMozo.body?.estado ?? 'sin cuadre'} · inventario=${inventarioMozo.status} · POST platillos=${escribirCartaMozo.status}`
+        ? `platos=${cartaMozo.body.data.length} · con ficha=${conFicha.length} · disponible=${conFicha.filter((p) => p.disponible).length}/${conFicha.length} · caja=${cajaMozo.body?.estado ?? 'sin cuadre'} · inventario=${inventarioMozo.status} · POST platillos=${escribirCartaMozo.status}`
         : JSON.stringify({
             carta: cartaMozo.status,
+            disponibilidad: disponibilidadOk,
             categorias: categoriasMozo.status,
             caja: cajaMozo.status,
             inventario: inventarioMozo.status,

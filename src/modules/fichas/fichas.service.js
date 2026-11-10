@@ -34,6 +34,7 @@ function fichaConDetalle(platilloId) {
       ingredientes: [],
       costo_porcion: 0,
       food_cost_pct: 0,
+      disponible: null,
     };
   }
 
@@ -52,6 +53,15 @@ function fichaConDetalle(platilloId) {
 
   const porciones = ficha.porciones_rendimiento || 1;
   const costoPorcion = store.round2(ficha.costo_total / porciones);
+  const disponible = ingredientes.length === 0
+    ? null
+    : ingredientes.every((detalle) => {
+      const insumo = store.find('insumos', detalle.insumo_id);
+      if (!insumo) {
+        return true;
+      }
+      return Number(insumo.stock_actual) >= Number(detalle.cantidad) / porciones;
+    });
 
   return {
     ...platillo,
@@ -62,6 +72,7 @@ function fichaConDetalle(platilloId) {
     food_cost_pct: platillo.precio_venta > 0
       ? store.round2((costoPorcion / platillo.precio_venta) * 100)
       : 0,
+    disponible,
   };
 }
 
@@ -222,6 +233,22 @@ async function enriquecerPlatillos(platillos) {
     const porciones = ficha ? Number(ficha.porciones_rendimiento) || 1 : 1;
     const costoPorcion = ficha ? db.round2(Number(ficha.costo_total) / porciones) : 0;
     const precio = Number(platillo.precio_venta);
+    // Disponibilidad real para vender 1 unidad: misma cuenta que usa el
+    // descuento de stock (cantidad de la ficha / porciones). `null` = platillo
+    // sin ficha activa (no se controla stock).
+    const consume = ficha && ficha.activa !== false
+      ? detallesPorFicha.get(ficha.id) || []
+      : [];
+    const disponible = consume.length === 0
+      ? null
+      : consume.every((detalle) => {
+        const insumo = insumosPorId.get(detalle.insumo_id);
+        if (!insumo) {
+          return true;
+        }
+        const necesario = Number(detalle.cantidad) / porciones;
+        return Number(insumo.stock_actual) >= necesario;
+      });
     return {
       ...platillo,
       precio_venta: precio,
@@ -230,6 +257,7 @@ async function enriquecerPlatillos(platillos) {
       ingredientes,
       costo_porcion: costoPorcion,
       food_cost_pct: precio > 0 ? db.round2((costoPorcion / precio) * 100) : 0,
+      disponible,
     };
   });
 }
