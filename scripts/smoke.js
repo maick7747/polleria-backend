@@ -1592,6 +1592,57 @@ function resumen(value) {
       throw new Error('El alias de usuario no se derivó/actualizó como se esperaba.');
     }
 
+    // ---- Turnos multi-valor y cambio de clave ----
+    const emailTurnos = `turnos-${sufijo}@fratellis.pe`;
+    const usuarioTurnos = await request(base, 'POST', '/configuracion/usuarios', {
+      token,
+      body: {
+        nombre: 'Turnos Smoke',
+        email: emailTurnos,
+        clave: 'demo123',
+        roles: ['Mozo'],
+        turnos: ['mañana', 'noche'],
+      },
+    });
+    const turnosEditados = await request(
+      base,
+      'PATCH',
+      `/configuracion/usuarios/${usuarioTurnos.body.id}`,
+      { token, body: { turnos: ['tarde'], clave: 'claveNueva123' } },
+    );
+    const loginClaveNueva = await request(base, 'POST', '/auth/login', {
+      body: { email: emailTurnos, password: 'claveNueva123' },
+    });
+    const loginClaveVieja = await request(base, 'POST', '/auth/login', {
+      body: { email: emailTurnos, password: 'demo123' },
+    });
+    const turnosOk =
+      usuarioTurnos.status === 201 &&
+      Array.isArray(usuarioTurnos.body.turnos) &&
+      usuarioTurnos.body.turnos.length === 2 &&
+      turnosEditados.ok &&
+      Array.isArray(turnosEditados.body.turnos) &&
+      turnosEditados.body.turnos.length === 1 &&
+      turnosEditados.body.turnos[0] === 'tarde' &&
+      loginClaveNueva.ok &&
+      Boolean(loginClaveNueva.body.token) &&
+      loginClaveVieja.status === 401;
+    results.push({
+      name: 'POST/PATCH /api/configuracion/usuarios (turnos y clave)',
+      status: turnosOk ? 201 : 500,
+      detail: turnosOk
+        ? `turnos=${turnosEditados.body.turnos.join('+')} · clave actualizada`
+        : JSON.stringify({
+          creado: usuarioTurnos.body,
+          patch: turnosEditados.body,
+          loginNuevo: loginClaveNueva.status,
+          loginViejo: loginClaveVieja.status,
+        }),
+    });
+    if (!turnosOk) {
+      throw new Error('Los turnos o el cambio de clave del usuario no funcionaron.');
+    }
+
     // ---- Delivery propio: estado_entrega persistido ----
     const usuariosReparto = await request(
       base,

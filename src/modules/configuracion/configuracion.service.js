@@ -19,6 +19,8 @@ const {
 
 const CAMPOS_ORDEN = ['id', 'nombre', 'email', 'usuario'];
 const USUARIO_RE = /^[a-zA-Z0-9._-]{3,50}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TURNOS = ['mañana', 'tarde', 'noche'];
 
 function aNumero(valor) {
   const numero = Number(valor);
@@ -54,6 +56,7 @@ function usuarioPublico(usuario, extras = {}) {
       : (usuario.usuario || usuarioDerivado(usuario)),
     telefono: usuario.telefono,
     activo: usuario.activo,
+    turnos: Array.isArray(usuario.turnos) ? [...usuario.turnos] : [],
     roles: extras.roles !== undefined ? extras.roles : (usuario.roles || []),
     permisos: extras.permisos !== undefined ? extras.permisos : (usuario.permisos || []),
     ultimo_acceso: usuario.ultimo_acceso === undefined ? null : usuario.ultimo_acceso,
@@ -81,6 +84,37 @@ function normalizarUsuario(valor, email) {
     );
   }
   return base;
+}
+
+// Normaliza los turnos del usuario. Acepta un array o una lista separada por
+// comas y devuelve los valores válidos en el orden canónico (mañana/tarde/noche).
+function normalizarTurnos(valor) {
+  if (valor === undefined) {
+    return undefined;
+  }
+  if (valor === null) {
+    return [];
+  }
+  const lista = Array.isArray(valor) ? valor : String(valor).split(',');
+  const seleccionados = [];
+  for (const item of lista) {
+    const texto = String(item).trim().toLowerCase().replace('manana', 'mañana');
+    if (!texto) {
+      continue;
+    }
+    if (!TURNOS.includes(texto)) {
+      throw new AppError(
+        400,
+        'VALIDATION_ERROR',
+        `El turno "${item}" no existe. Usa mañana, tarde o noche.`,
+        [{ field: 'turnos', value: item }],
+      );
+    }
+    if (!seleccionados.includes(texto)) {
+      seleccionados.push(texto);
+    }
+  }
+  return TURNOS.filter((turno) => seleccionados.includes(turno));
 }
 
 async function porIds(tabla, ids, select, orderBy = 'id') {
@@ -217,7 +251,7 @@ async function listUsuariosSupabase(filtros, query) {
 
   let consulta = repository
     .table('usuarios')
-    .select('id, nombre, email, usuario, telefono, activo, ultimo_acceso, creado_en', { count: 'exact' });
+    .select('id, nombre, email, usuario, telefono, activo, turnos, ultimo_acceso, creado_en', { count: 'exact' });
   if (filtros.activo !== null) {
     consulta = consulta.eq('activo', filtros.activo);
   }
@@ -299,6 +333,7 @@ async function crearUsuario(body) {
   const clave = requiredString(payload.clave || payload.password, 'clave', { max: 200 });
   const nombre = requiredString(payload.nombre, 'nombre', { max: 120 });
   const telefono = optionalString(payload.telefono, 'telefono', { max: 20 });
+  const turnos = normalizarTurnos(payload.turnos) || [];
 
   if (!db.isSupabase()) {
     const roles = validarRoles(payload.roles);
@@ -319,6 +354,7 @@ async function crearUsuario(body) {
       password_hash: hashPassword(clave),
       telefono,
       activo: true,
+      turnos,
       roles,
       permisos: store.permisosDeRoles(roles),
       ultimo_acceso: null,
@@ -370,6 +406,7 @@ async function crearUsuario(body) {
       password_hash: hashPassword(clave),
       telefono,
       activo: true,
+      turnos,
     });
   } catch (error) {
     if (String(error && error.code) === '23505') {
@@ -436,25 +473,61 @@ async function actualizarUsuario(id, body) {
   if (payload.usuario !== undefined) {
     patch.usuario = normalizarUsuario(payload.usuario, usuario.email);
   }
+  if (payload.email !== undefined) {
+    const email = requiredString(payload.email, 'email', { max: 150 }).toLowerCase();
+    if (!EMAIL_RE.test(email)) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'El correo no tiene un formato válido.', [
+        { field: 'email', value: email },
+      ]);
+    }
+    patch.email = email;
+  }
+  if (payload.clave !== undefined && payload.clave !== null && String(payload.clave).trim() !== '') {
+    patch.password_hash = hashPassword(requiredString(payload.clave, 'clave', { max: 200 }));
+  }
+  const turnos = normalizarTurnos(payload.turnos);
+  if (turnos !== undefined) {
+    patch.turnos = turnos;
+  }
 
-  if (patch.usuario !== undefined) {
+  if (patch.usuario !== undefined || patch.email !== undefined) {
     if (!db.isSupabase()) {
-      const repetido = store.state.usuarios.some(
+      const repetidoUsuario = patch.usuario !== undefined && store.state.usuarios.some(
         (item) => Number(item.id) !== Number(usuario.id)
           && String(item.usuario || '').toLowerCase() === patch.usuario,
       );
-      if (repetido) {
+      if (repetidoUsuario) {
         throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese nombre de usuario.');
       }
+      const repetidoEmail = patch.email !== undefined && store.state.usuarios.some(
+        (item) => Number(item.id) !== Number(usuario.id)
+          && String(item.email || '').toLowerCase() === patch.email,
+      );
+      if (repetidoEmail) {
+        throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese correo.');
+      }
     } else {
-      const { data } = await repository.list('usuarios', {
-        select: 'id',
-        filters: { usuario: patch.usuario },
-        limit: 10,
-      });
-      const repetido = (data || []).some((fila) => Number(fila.id) !== Number(usuario.id));
-      if (repetido) {
-        throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese nombre de usuario.');
+      if (patch.usuario !== undefined) {
+        const { data } = await repository.list('usuarios', {
+          select: 'id',
+          filters: { usuario: patch.usuario },
+          limit: 10,
+        });
+        const repetido = (data || []).some((fila) => Number(fila.id) !== Number(usuario.id));
+        if (repetido) {
+          throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese nombre de usuario.');
+        }
+      }
+      if (patch.email !== undefined) {
+        const { data } = await repository.list('usuarios', {
+          select: 'id',
+          filters: { email: patch.email },
+          limit: 10,
+        });
+        const repetido = (data || []).some((fila) => Number(fila.id) !== Number(usuario.id));
+        if (repetido) {
+          throw new AppError(409, 'CONFLICT', 'Ya existe un usuario con ese correo.');
+        }
       }
     }
   }

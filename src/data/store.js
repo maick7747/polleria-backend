@@ -292,11 +292,11 @@ function addPago({ pedido_id = null, cuenta_id = null, metodo, monto, es_contrae
 
 function seed() {
   const userSeed = [
-    { nombre: 'Maick Vicente', email: 'maick@fratellis.pe', usuario: 'maick', roles: ['Dueño/Admin'], password: 'demo123', telefono: '999111222' },
-    { nombre: 'Yair Salamán', email: 'cajero@fratellis.pe', usuario: 'cajero', roles: ['Mozo', 'Cajero'], password: 'demo123', telefono: '999222333' },
-    { nombre: 'Cocina Fratelli', email: 'cocina@fratellis.pe', usuario: 'cocina', roles: ['Cocinero'], password: 'demo123', telefono: '999333444' },
-    { nombre: 'Repartidor Fratelli', email: 'repartidor@fratellis.pe', usuario: 'repartidor', roles: ['Repartidor'], password: 'demo123', telefono: '999444555' },
-    { nombre: 'Técnico Fratelli', email: 'tecnico@fratellis.pe', usuario: 'tecnico', roles: ['Admin'], password: 'demo123', telefono: '999555666' },
+    { nombre: 'Maick Vicente', email: 'maick@fratellis.pe', usuario: 'maick', roles: ['Dueño/Admin'], password: 'demo123', telefono: '999111222', turnos: ['mañana', 'tarde', 'noche'] },
+    { nombre: 'Yair Salamán', email: 'cajero@fratellis.pe', usuario: 'cajero', roles: ['Mozo', 'Cajero'], password: 'demo123', telefono: '999222333', turnos: ['mañana', 'tarde'] },
+    { nombre: 'Cocina Fratelli', email: 'cocina@fratellis.pe', usuario: 'cocina', roles: ['Cocinero'], password: 'demo123', telefono: '999333444', turnos: ['tarde', 'noche'] },
+    { nombre: 'Repartidor Fratelli', email: 'repartidor@fratellis.pe', usuario: 'repartidor', roles: ['Repartidor'], password: 'demo123', telefono: '999444555', turnos: ['tarde', 'noche'] },
+    { nombre: 'Técnico Fratelli', email: 'tecnico@fratellis.pe', usuario: 'tecnico', roles: ['Admin'], password: 'demo123', telefono: '999555666', turnos: ['mañana', 'tarde'] },
   ];
 
   state.usuarios = userSeed.map((user) => {
@@ -318,6 +318,7 @@ function seed() {
       password_hash: hashPassword(user.password),
       telefono: user.telefono,
       activo: true,
+      turnos: user.turnos || [],
       roles,
       permisos,
       ultimo_acceso: null,

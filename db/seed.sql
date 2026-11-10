@@ -87,12 +87,12 @@ ON CONFLICT DO NOTHING;
 -- ---------------------------------------------------------------------
 -- 2. USUARIOS DEMO (contraseña: demo123 — hash scrypt salt:hash)
 -- ---------------------------------------------------------------------
-INSERT INTO usuarios (nombre, email, password_hash, telefono) VALUES
-  ('Maick Vicente',        'maick@fratellis.pe',      'a1b2c3d4e5f60718293a4b5c6d7e8f90:4ca800b39959cb818a14a46aae9b286699519fd59dbc1ccef50da86ed2229b57', '999111222'),
-  ('Yair Salamán',         'cajero@fratellis.pe',     'b2c3d4e5f60718293a4b5c6d7e8f90a1:8467811d565b97722dd3394633fec2ed5c67f871f94aac56d13a29638aca2322', '999222333'),
-  ('Cocina Fratelli',      'cocina@fratellis.pe',     'c3d4e5f60718293a4b5c6d7e8f90a1b2:be3fe4a8ad9c43f6b8e19cc987fbd6398ec51d65dad357d31d7011e1b70582fb', '999333444'),
-  ('Repartidor Fratelli',  'repartidor@fratellis.pe', 'd4e5f60718293a4b5c6d7e8f90a1b2c3:ba462cc6a5efa82ea48abc73e19fd29bdb671de0c4ccc8338eac8fff2239be33', '999444555'),
-  ('Técnico Fratelli',     'tecnico@fratellis.pe',    'e5f60718293a4b5c6d7e8f90a1b2c3d4:feea751b93ffeff7950c96d56a7dc7987b5335bd353b9064329d1b3cdd5d08b7', '999555666')
+INSERT INTO usuarios (nombre, email, password_hash, telefono, turnos) VALUES
+  ('Maick Vicente',        'maick@fratellis.pe',      'a1b2c3d4e5f60718293a4b5c6d7e8f90:4ca800b39959cb818a14a46aae9b286699519fd59dbc1ccef50da86ed2229b57', '999111222', ARRAY['mañana','tarde','noche']::text[]),
+  ('Yair Salamán',         'cajero@fratellis.pe',     'b2c3d4e5f60718293a4b5c6d7e8f90a1:8467811d565b97722dd3394633fec2ed5c67f871f94aac56d13a29638aca2322', '999222333', ARRAY['mañana','tarde']::text[]),
+  ('Cocina Fratelli',      'cocina@fratellis.pe',     'c3d4e5f60718293a4b5c6d7e8f90a1b2:be3fe4a8ad9c43f6b8e19cc987fbd6398ec51d65dad357d31d7011e1b70582fb', '999333444', ARRAY['tarde','noche']::text[]),
+  ('Repartidor Fratelli',  'repartidor@fratellis.pe', 'd4e5f60718293a4b5c6d7e8f90a1b2c3:ba462cc6a5efa82ea48abc73e19fd29bdb671de0c4ccc8338eac8fff2239be33', '999444555', ARRAY['tarde','noche']::text[]),
+  ('Técnico Fratelli',     'tecnico@fratellis.pe',    'e5f60718293a4b5c6d7e8f90a1b2c3d4:feea751b93ffeff7950c96d56a7dc7987b5335bd353b9064329d1b3cdd5d08b7', '999555666', ARRAY['mañana','tarde']::text[])
 ON CONFLICT (email) DO NOTHING;
 
 INSERT INTO usuario_rol (usuario_id, rol_id)

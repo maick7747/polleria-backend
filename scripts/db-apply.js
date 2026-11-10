@@ -29,6 +29,7 @@ const FILES = [
   'migrations/011_realtime_anon_policy.sql',
   'migrations/012_cuadre_reapertura.sql',
   'migrations/013_kds_v2_estaciones_entrega.sql',
+  'migrations/014_turnos_usuario.sql',
   'seed.sql',
 ];
 
