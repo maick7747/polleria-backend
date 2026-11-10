@@ -941,6 +941,7 @@ function resumen(value) {
           tipo_documento: 'DNI',
           numero_documento: documentoSmoke,
           telefono: '999999999',
+          correo: 'cliente.smoke@fratellis.pe',
         },
         comprobante_tipo: 'boleta',
       },
@@ -956,6 +957,7 @@ function resumen(value) {
       detalleCliente.ok &&
       clienteGuardado &&
       clienteGuardado.nombre === 'Cliente Smoke' &&
+      clienteGuardado.correo === 'cliente.smoke@fratellis.pe' &&
       String(clienteGuardado.numero_documento) === documentoSmoke;
     results.push({
       name: 'PATCH /api/cuentas/:id/cliente (cliente + comprobante)',

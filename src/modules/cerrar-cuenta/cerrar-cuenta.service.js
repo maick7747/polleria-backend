@@ -35,6 +35,7 @@ function clienteResumen(cliente) {
     tipo_documento: cliente.tipo_documento ?? null,
     numero_documento: cliente.numero_documento ?? null,
     telefono: cliente.telefono ?? null,
+    correo: cliente.correo ?? null,
     direccion: cliente.direccion ?? null,
     referencia: cliente.referencia ?? null,
   };

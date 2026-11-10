@@ -90,6 +90,7 @@ function clienteResumen(cliente) {
     tipo_documento: cliente.tipo_documento ?? null,
     numero_documento: cliente.numero_documento ?? null,
     telefono: cliente.telefono ?? null,
+    correo: cliente.correo ?? null,
     direccion: cliente.direccion ?? null,
     referencia: cliente.referencia ?? null,
   };
@@ -135,6 +136,7 @@ async function resolverCliente(clientePayload, clienteIdActual = null) {
     tipo_documento: tipoDocumento,
     numero_documento: numeroDocumento,
     telefono: optionalString(payload.telefono, 'telefono', { max: 20 }),
+    correo: optionalString(payload.correo, 'correo', { max: 120 }),
     direccion: optionalString(payload.direccion, 'direccion', { max: 200 }),
     referencia: optionalString(payload.referencia, 'referencia', { max: 150 }),
   };
@@ -519,10 +521,11 @@ async function attachCliente(cuentaId, body) {
   const id = parseId(cuentaId);
   const payload = requiredObject(body);
 
-  const tieneCliente = payload.cliente !== undefined && payload.cliente !== null;
+  const quitarCliente = payload.cliente === null;
+  const tieneCliente = payload.cliente !== undefined && !quitarCliente;
   const tieneComprobante = payload.comprobante_tipo !== undefined
     && payload.comprobante_tipo !== null;
-  if (!tieneCliente && !tieneComprobante) {
+  if (!tieneCliente && !tieneComprobante && !quitarCliente) {
     throw new AppError(
       400,
       'VALIDATION_ERROR',
@@ -540,7 +543,9 @@ async function attachCliente(cuentaId, body) {
       throw new AppError(409, 'CONFLICT', 'La cuenta ya no está abierta.');
     }
 
-    if (tieneCliente) {
+    if (quitarCliente) {
+      cuenta.cliente_id = null;
+    } else if (tieneCliente) {
       cuenta.cliente_id = await resolverCliente(payload.cliente, cuenta.cliente_id);
     }
     if (comprobanteTipo) {
@@ -555,7 +560,9 @@ async function attachCliente(cuentaId, body) {
   }
 
   const patch = {};
-  if (tieneCliente) {
+  if (quitarCliente) {
+    patch.cliente_id = null;
+  } else if (tieneCliente) {
     patch.cliente_id = await resolverCliente(payload.cliente, cuenta.cliente_id);
   }
   if (comprobanteTipo) {

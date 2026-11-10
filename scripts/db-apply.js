@@ -30,6 +30,7 @@ const FILES = [
   'migrations/012_cuadre_reapertura.sql',
   'migrations/013_kds_v2_estaciones_entrega.sql',
   'migrations/014_turnos_usuario.sql',
+  'migrations/015_cliente_correo.sql',
   'seed.sql',
 ];
 
