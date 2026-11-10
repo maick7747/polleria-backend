@@ -51,6 +51,10 @@ function normalizarDetalle(detalle) {
     fecha_inicio_prep: detalle.fecha_inicio_prep ?? null,
     fecha_listo: detalle.fecha_listo ?? null,
     platillo_nombre: detalle.platillo_nombre ?? null,
+    // KDS v2: la vista de Mesas necesita saber si la línea ya se entregó.
+    estacion: detalle.estacion ?? null,
+    curso: detalle.curso ?? null,
+    entregado_en: detalle.entregado_en ?? null,
   };
 }
 
@@ -82,6 +86,7 @@ function normalizarPedido(pedido, extras = {}) {
     fecha_inicio_prep: pedido.fecha_inicio_prep ?? null,
     fecha_listo: pedido.fecha_listo ?? null,
     fecha_entrega: pedido.fecha_entrega ?? null,
+    estado_entrega: pedido.estado_entrega ?? null,
     mesa_numero: extras.mesa_numero ?? pedido.mesa_numero ?? null,
     cliente_nombre: extras.cliente_nombre ?? pedido.cliente_nombre ?? null,
     repartidor_nombre: extras.repartidor_nombre ?? pedido.repartidor_nombre ?? null,

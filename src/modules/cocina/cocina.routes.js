@@ -7,7 +7,7 @@ const service = require('./cocina.service');
 
 const router = express.Router();
 const permisoKds = requirePermiso('cocina.kds');
-const permisoEntrega = requirePermiso('cocina.kds', 'venta.registrar');
+const permisoEntrega = requirePermiso('venta.registrar');
 
 function manejar(accion) {
   return async (req, res, next) => {
@@ -49,7 +49,8 @@ router.patch(
   }),
 );
 
-// KDS v2 — entrega por línea (la puede hacer cocina o el mozo).
+// KDS v2 — entrega por línea. Solo el mozo/cajero/dueño confirma la entrega;
+// cocina termina en "listo" y el aviso pasa por /pedidos-listos.
 router.patch(
   '/pedidos/:pedidoId/platos/:detalleId/entregar',
   permisoEntrega,
