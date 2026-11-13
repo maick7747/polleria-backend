@@ -514,14 +514,21 @@ async function cancelarCuenta(id, body, usuario) {
 
   let movimientos = 0;
   for (const pedido of pedidosCuenta) {
-    if (pedido.estado !== 'cancelado') {
-      movimientos += (await pedidosDb.revertirStockPedido(
-        pedido,
-        usuario.id,
-        motivo || 'Cancelación de cuenta',
-      )).length;
-      await repository.update('pedidos', pedido.id, { estado: 'cancelado' });
+    // Transición atómica: si otro proceso ya lo canceló/cobró, no devolvemos
+    // stock (evita inventario inflado por doble cancelación).
+    const cancelados = await repository.updateWhere(
+      'pedidos',
+      { id: pedido.id, estado: ['borrador', 'en_cocina', 'servido'] },
+      { estado: 'cancelado' },
+    );
+    if (!cancelados || cancelados.length === 0) {
+      continue;
     }
+    movimientos += (await pedidosDb.revertirStockPedido(
+      pedido,
+      usuario.id,
+      motivo || 'Cancelación de cuenta',
+    )).length;
   }
 
   await repository.update('cuentas', cuenta.id, {

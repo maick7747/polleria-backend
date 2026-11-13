@@ -415,6 +415,10 @@ async function descontarStockPedido(pedido, usuarioId, detallesPrevios = null) {
 }
 
 async function revertirStockPedido(pedido, usuarioId, motivo) {
+  // IMPORTANTE: quien llama debe haber ganado antes la transición atómica a
+  // 'cancelado' (UPDATE ... WHERE estado IN (...)). Si se invoca dos veces,
+  // `movimientosDePedido(..., 'salida')` sigue existiendo y el stock se
+  // devolvería por duplicado: no hay columna `stock_descontado` en la BD.
   const salidas = await movimientosDePedido(pedido.id, 'salida');
   if (salidas.length === 0) {
     return [];

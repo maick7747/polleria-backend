@@ -1109,6 +1109,17 @@ async function cancelarPedido(id, body, usuario) {
     throw new AppError(409, 'CONFLICT', 'El pedido ya está cancelado.');
   }
 
+  // Transición ATÓMICA antes de reponer stock: solo la primera cancelación
+  // gana. Así dos terminales (o un reintento) no devuelven el stock dos veces.
+  const cancelados = await repository.updateWhere(
+    'pedidos',
+    { id: pedido.id, estado: ['borrador', 'en_cocina', 'servido'] },
+    { estado: 'cancelado' },
+  );
+  if (!cancelados || cancelados.length === 0) {
+    throw new AppError(409, 'PEDIDO_YA_CERRADO', 'El pedido ya fue cobrado o cancelado.');
+  }
+
   const movimientos = await pedidosDb.revertirStockPedido(
     pedido,
     usuario.id,
@@ -1117,7 +1128,7 @@ async function cancelarPedido(id, body, usuario) {
 
   // El esquema no tiene columnas fecha_cancelacion/motivo_cancelacion:
   // el motivo se conserva en el log de la petición y el estado queda en 'cancelado'.
-  const actualizado = await repository.update('pedidos', pedido.id, { estado: 'cancelado' });
+  const actualizado = cancelados[0];
 
   if (pedido.cuenta_id) {
     const cuenta = await repository.getById('cuentas', pedido.cuenta_id);
