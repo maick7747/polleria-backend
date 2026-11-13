@@ -271,13 +271,18 @@ async function list(table, options = {}) {
   const currentPage = normalizePage(page);
   const pageSize = clampLimit(limit);
   const cursor = normalizarCursor(after);
+  // Defensa: `orderBy` llega de parseSort (whitelist) en los servicios, pero
+  // el repositorio es compartido. Solo se acepta un nombre de columna simple.
+  const ordenSeguro = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(String(orderBy))
+    ? orderBy
+    : 'id';
 
   if (mode() === 'memory') {
     let filtered = memoryRows(table).filter((row) => matchesFilters(row, filters));
     if (cursor !== null) {
       filtered = filtered.filter((row) => Number(row.id) > cursor);
     }
-    const sorted = sortRows(filtered, orderBy, ascending);
+    const sorted = sortRows(filtered, ordenSeguro, ascending);
     const start = (currentPage - 1) * pageSize;
     const filas = sorted.slice(start, start + pageSize).map(clone);
     return {
@@ -291,7 +296,7 @@ async function list(table, options = {}) {
   if (cursor !== null) {
     query = query.gt('id', cursor);
   }
-  query = query.order(orderBy, { ascending });
+  query = query.order(ordenSeguro, { ascending });
 
   const start = (currentPage - 1) * pageSize;
   const { data, error, count } = await query.range(start, start + pageSize - 1);
