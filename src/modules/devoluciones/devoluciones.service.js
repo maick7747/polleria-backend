@@ -222,7 +222,9 @@ async function listDevolucionesSupabase(filtros, query) {
     consulta = consulta.lt('fecha_reporte', finExclusivo(filtros.hasta));
   }
   if (filtros.q) {
-    consulta = consulta.ilike('motivo', `%${filtros.q}%`);
+    // `%` y `_` son comodines de LIKE: se limpian para no ampliar la búsqueda.
+    const texto = String(filtros.q).replace(/[%_]/g, '');
+    consulta = consulta.ilike('motivo', `%${texto}%`);
   }
   consulta = consulta
     .order(filtros.sort, { ascending: filtros.ascending })

@@ -8,6 +8,7 @@ const helmet = require('helmet');
 const { rateLimit } = require('express-rate-limit');
 
 const env = require('./config/env');
+const repository = require('./data/repository');
 const authMiddleware = require('./middleware/auth');
 const { requireRoles } = require('./middleware/roles');
 const { notFoundHandler, errorHandler } = require('./middleware/error');
@@ -106,13 +107,24 @@ if (env.logRequests && env.nodeEnv !== 'test') {
   });
 }
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  // `repository.health()` comprueba conectividad real (una consulta liviana),
+  // no solo la presencia de variables de entorno. Un fallo de la BD no cambia
+  // el 200: Render usa este endpoint como liveness y debe seguir respondiendo.
+  let baseDatos = { mode: env.dbMode, ok: false };
+  try {
+    baseDatos = await repository.health();
+  } catch (error) {
+    baseDatos = { mode: env.dbMode, ok: false, error: 'sin conexión' };
+  }
+
   res.json({
     status: 'ok',
     service: 'fratellis-backend',
     version: '1.0.0',
     environment: env.nodeEnv,
     supabase: Boolean(require('./lib/supabase')),
+    db: baseDatos,
     timestamp: new Date().toISOString(),
     uptime_sec: Math.round(process.uptime()),
     requestId: req.id,

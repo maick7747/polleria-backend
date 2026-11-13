@@ -177,7 +177,9 @@ function listComprasMemoria(filtros, query) {
 // Valor para el operador `or` de PostgREST: se entrecomilla para que comas,
 // espacios y paréntesis del texto buscado no rompan la expresión.
 function valorOrLike(texto) {
-  return `"%${String(texto).replace(/"/g, '')}%"`;
+  // `%` y `_` son comodines de LIKE; las comillas rompen la sintaxis de `or`.
+  const limpio = String(texto).replace(/["%_]/g, '');
+  return `"%${limpio}%"`;
 }
 
 async function listComprasSupabase(filtros, query) {

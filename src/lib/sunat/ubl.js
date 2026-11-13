@@ -51,8 +51,13 @@ function construirUbl(comprobante, emisor = {}) {
   const rucEmisor = emisor.ruc || '00000000000';
   const razonSocial = emisor.razonSocial || 'EMPRESA SIN NOMBRE';
 
-  const documentoCliente = comprobante.ruc ? String(comprobante.ruc) : '00000000';
-  const tipoDocumentoCliente = comprobante.ruc ? '6' : '1';
+  const tipoDocumentoCliente =
+    comprobante.tipo_documento === 'RUC' || comprobante.ruc ? '6' : '1';
+  const documentoCliente = comprobante.documento
+    ? String(comprobante.documento)
+    : comprobante.ruc
+      ? String(comprobante.ruc)
+      : (tipoDocumentoCliente === '6' ? '00000000000' : '00000000');
   const nombreCliente = comprobante.cliente || 'CLIENTE VARIOS';
 
   const items = Array.isArray(comprobante.items) ? comprobante.items : [];

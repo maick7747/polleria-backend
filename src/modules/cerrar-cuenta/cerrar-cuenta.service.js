@@ -391,14 +391,25 @@ async function comprobanteCuenta(id) {
     })),
   );
 
+  // Cliente real de la cuenta (se captura en venta-local con DNI/RUC). Antes
+  // se enviaba siempre 'Cliente varios', incluso en facturas con RUC.
+  const cliente = cuenta.cliente_id
+    ? (db.isSupabase()
+        ? await repository.getById('clientes', cuenta.cliente_id)
+        : store.find('clientes', cuenta.cliente_id))
+    : null;
+  const esRuc = cliente && cliente.tipo_documento === 'RUC';
+
   return {
     tipo: cuenta.comprobante_tipo,
     numero: cuenta.comprobante_numero,
     fecha: cuenta.fecha_cierre,
     cuenta_id: cuenta.id,
     mesa_numero: detalle.mesa_numero,
-    cliente: 'Cliente varios',
-    ruc: null,
+    cliente: cliente ? cliente.nombre : 'Cliente varios',
+    ruc: esRuc ? cliente.numero_documento : null,
+    documento: cliente ? cliente.numero_documento : null,
+    tipo_documento: cliente ? cliente.tipo_documento : null,
     moneda: 'PEN',
     subtotal: detalle.subtotal,
     igv: detalle.igv,
