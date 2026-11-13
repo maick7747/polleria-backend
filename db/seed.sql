@@ -18,6 +18,10 @@
 --   operativo (NOT EXISTS). No borra datos existentes.
 --
 -- ADVERTENCIA: es data DEMO. No ejecutar sobre una base con datos reales.
+--   Los 5 usuarios de §2 usan la clave pública `demo123` (el repo es público).
+--   En producción: desactivarlos (UPDATE usuarios SET activo=false) o rotarles
+--   la clave con `node scripts/hash-clave.js` (ver docs/AUDITORIA_CODIGO_20261113.md, M2).
+--   `npm run db:apply` ya NO aplica este archivo salvo `-- --seed`.
 -- =====================================================================
 
 BEGIN;
