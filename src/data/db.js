@@ -25,6 +25,11 @@ function persistenceError(message, cause) {
   ]);
 }
 
+// Violación de unicidad de PostgreSQL/PostgREST (p. ej. correlativo duplicado).
+function esConflictoUnico(error) {
+  return Boolean(error) && String(error.code === undefined ? '' : error.code) === '23505';
+}
+
 async function findOrThrow(table, id, label) {
   if (!isSupabase()) {
     return store.findOrThrow(table, id, label);
@@ -155,6 +160,11 @@ async function nextComprobanteNumero() {
   if (!isSupabase()) {
     return store.generarComprobanteNumero();
   }
+  // NOTA (auditoría P1-5): `cuentas.comprobante_numero` no tiene UNIQUE, así
+  // que una colisión entre dos cobros simultáneos no se puede detectar por
+  // 23505. La ventana se reduce con el RPC transaccional `fn_cobrar_cuenta`
+  // (017); para cerrarla del todo hace falta un índice único parcial o una
+  // secuencia PostgreSQL (backlog P2).
   const prefix = 'B001-';
   const { data, error } = await repository
     .table('cuentas')
@@ -313,6 +323,7 @@ module.exports = {
   dbMode,
   isSupabase,
   persistenceError,
+  esConflictoUnico,
   findOrThrow,
   findOne,
   getConfig,

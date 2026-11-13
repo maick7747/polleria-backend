@@ -144,10 +144,23 @@ async function createPedidoRecord(options) {
   };
 
   let pedido;
-  try {
-    pedido = await repository.insert('pedidos', pedidoRow);
-  } catch (error) {
-    throw db.persistenceError('No se pudo registrar el pedido.', error);
+  for (let intento = 0; intento < 2; intento += 1) {
+    try {
+      pedido = await repository.insert('pedidos', pedidoRow);
+      break;
+    } catch (error) {
+      const texto = `${error && error.message ? error.message : ''} ${
+        error && error.details ? error.details : ''
+      }`;
+      // Correlativo MAX+1: otra terminal pudo insertar el mismo `numero`
+      // entre el SELECT y el INSERT. Se regenera y se reintenta una vez.
+      // (La RPC fn_crear_ronda_y_enviar ya usa advisory lock.)
+      if (intento === 0 && db.esConflictoUnico(error) && /numero/i.test(texto)) {
+        pedidoRow.numero = await db.nextPedidoNumero();
+        continue;
+      }
+      throw db.persistenceError('No se pudo registrar el pedido.', error);
+    }
   }
 
   const ahora = db.nowIso();

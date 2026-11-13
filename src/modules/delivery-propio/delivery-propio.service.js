@@ -242,10 +242,22 @@ async function crearPedidoBaseSupabase(options) {
   };
 
   let pedido;
-  try {
-    pedido = await repository.insert('pedidos', fila);
-  } catch (error) {
-    throw db.persistenceError('No se pudo registrar el pedido.', error);
+  for (let intento = 0; intento < 2; intento += 1) {
+    try {
+      pedido = await repository.insert('pedidos', fila);
+      break;
+    } catch (error) {
+      const texto = `${error && error.message ? error.message : ''} ${
+        error && error.details ? error.details : ''
+      }`;
+      // Correlativo MAX+1: si otra terminal usó el mismo `numero`, se
+      // regenera y se reintenta una sola vez.
+      if (intento === 0 && db.esConflictoUnico(error) && /numero/i.test(texto)) {
+        fila.numero = await db.nextPedidoNumero();
+        continue;
+      }
+      throw db.persistenceError('No se pudo registrar el pedido.', error);
+    }
   }
 
   if (detalles.length === 0) {
