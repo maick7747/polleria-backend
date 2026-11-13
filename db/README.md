@@ -32,6 +32,15 @@ Fuente autoritativa del modelo: `Proyecto_Polleria/04_Diseno/Modelado_Datos/04_m
 > En producción no se ejecuta `seed.sql`: el orden es `001` → `002`.
 > Ejecutar el seed **antes** de `002` evita cualquier dependencia del rol que aplica RLS.
 
+### 2.1 Aplicación automática con `npm run db:apply`
+
+| Comando | Qué aplica |
+|---|---|
+| `npm run db:apply` | Solo migraciones (esquema). **No** ejecuta `seed.sql`. |
+| `npm run db:apply -- --seed` | Migraciones + `db/seed.sql` (solo BD de demo/prueba). |
+
+El script registra las migraciones en `backend/scripts/db-apply.js` (array `FILES_BASE`) y al final compara los conteos con la referencia de las migraciones (**31 tablas / 27 ENUM / 51 FK**). Si hay objetos extra fuera del modelo (p. ej. `mensajes`), lo informa pero no lo trata como error. `node scripts/db-apply.js --help` muestra la ayuda.
+
 > Si el proyecto Supabase ya tiene tablas con el mismo nombre de otro sistema, **no ejecutes estos scripts en ese proyecto**. Usa un proyecto dedicado o, como mínimo, un esquema dedicado (`CREATE SCHEMA fratellis`) y ajusta `search_path`; el modelo actual asume `public`.
 
 ---

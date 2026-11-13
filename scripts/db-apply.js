@@ -15,7 +15,7 @@ const path = require('path');
 const { Client } = require('pg');
 const env = require('../src/config/env');
 
-const FILES = [
+const FILES_BASE = [
   'migrations/001_schema.sql',
   'migrations/002_rbac_rls.sql',
   'migrations/003_sunat_envio.sql',
@@ -35,7 +35,32 @@ const FILES = [
   'seed.sql',
 ];
 
+// El seed crea cuentas/pedidos demo con clave `demo123`: NUNCA debe correr
+// por defecto sobre una base con datos reales. Solo con `-- --seed`.
+const incluirSeed = process.argv.includes('--seed');
+const FILES = FILES_BASE.filter((file) => incluirSeed || file !== 'seed.sql');
+
 const BASE = path.resolve(__dirname, '../db');
+
+function ayuda() {
+  console.log(
+    [
+      'Uso: node scripts/db-apply.js [--seed]',
+      '',
+      '  (sin flags)  Aplica solo migraciones (esquema). No siembra demo.',
+      '  --seed       Aplica migraciones + db/seed.sql (SOLO para una BD de prueba).',
+      '  --help, -h   Muestra esta ayuda.',
+      '',
+      'Requiere DATABASE_URL (o SUPABASE_DB_URL) en backend/.env.',
+      'No imprime credenciales.',
+    ].join('\n'),
+  );
+}
+
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  ayuda();
+  process.exit(0);
+}
 
 function fail(message) {
   console.error(`\n[db:apply] ${message}\n`);
@@ -85,20 +110,31 @@ async function verificar(client) {
     resultado[nombre] = rows[0].n;
   }
 
-  const ESPERADO = { tablas: 29, enums: 27, fks: 46 };
+  // Referencia calculada desde las migraciones (001–016):
+  //   29 tablas del modelo
+  //   +1 `liquidaciones` y +1 `devolucion_reembolsos` (009) = 31
+  //   27 ENUM (001) + enum_estacion/enum_curso (013) ya incluidos
+  //   51 FK (001: 45, 004: 1, 009: 4, 013: 1)
+  // Puede haber tablas extra fuera del modelo (p. ej. `mensajes`): no es error.
+  const REFERENCIA = { tablas: 31, enums: 27, fks: 51 };
 
-  console.log('\n[db:apply] Verificación:');
-  console.log(`  Tablas: ${resultado.tablas} (esperado ${ESPERADO.tablas})`);
-  console.log(`  ENUM:   ${resultado.enums} (esperado ${ESPERADO.enums})`);
-  console.log(`  FK:     ${resultado.fks} (esperado ${ESPERADO.fks})`);
+  console.log('\n[db:apply] Verificación (referencia de las migraciones):');
+  console.log(`  Tablas: ${resultado.tablas} (referencia ${REFERENCIA.tablas})`);
+  console.log(`  ENUM:   ${resultado.enums} (referencia ${REFERENCIA.enums})`);
+  console.log(`  FK:     ${resultado.fks} (referencia ${REFERENCIA.fks})`);
 
-  if (
-    resultado.tablas !== ESPERADO.tablas
-    || resultado.enums !== ESPERADO.enums
-    || resultado.fks !== ESPERADO.fks
-  ) {
+  const faltantes = Object.entries(REFERENCIA).filter(
+    ([nombre, esperado]) => resultado[nombre] < esperado,
+  );
+  if (faltantes.length > 0) {
     console.warn(
-      '\n[db:apply] ADVERTENCIA: los conteos no coinciden. Revisa si había tablas/ENUM previos o si el esquema se aplicó parcialmente.',
+      '\n[db:apply] ADVERTENCIA: faltan objetos respecto de las migraciones. ' +
+        'Revisa si el esquema se aplicó parcialmente.',
+    );
+  } else if (Object.entries(REFERENCIA).some(([nombre, esperado]) => resultado[nombre] > esperado)) {
+    console.log(
+      '\n[db:apply] Nota: hay objetos adicionales (tablas/ENUM/FK fuera de las ' +
+        'migraciones, p. ej. `mensajes`). No es un error.',
     );
   }
   return resultado;
@@ -125,6 +161,11 @@ async function main() {
 
   try {
     await client.connect();
+    console.log(
+      `[db:apply] Modo: ${
+        incluirSeed ? 'INCLUYE seed (DEMO)' : 'solo esquema/migraciones (sin seed)'
+      }`,
+    );
     console.log('[db:apply] Conexión OK. Aplicando archivos...\n');
 
     for (const file of FILES) {
