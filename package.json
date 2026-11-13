@@ -7,6 +7,7 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "smoke": "node scripts/smoke.js",
+    "test": "node --test tests/validacion.test.js",
     "smoke:supabase": "node scripts/smoke-supabase.js",
     "verify": "node scripts/verify-rules.js",
     "verify:moneda": "node scripts/verify-moneda.js",
