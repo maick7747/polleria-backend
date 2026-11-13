@@ -50,17 +50,29 @@ function fechaLima(valor) {
   return new Date(fecha.getTime() - 5 * 3600000).toISOString().slice(0, 10);
 }
 
-function ventasDelDia(pagos, fecha) {
-  return store.round2(
-    pagos.reduce(
-      (total, pago) => (fechaLima(pago.fecha) === fecha ? total + Number(pago.monto) : total),
-      0,
-    ),
+// Reembolsos agrupados por día operativo (Lima). Recibe filas de
+// `devoluciones` (monto_reembolsado, fecha_resolucion) o del store (monto, fecha).
+function mapaReembolsos(filas, campoFecha, campoMonto) {
+  const mapa = new Map();
+  for (const fila of filas) {
+    const dia = fechaLima(fila[campoFecha]);
+    const monto = Number(fila[campoMonto] || 0);
+    mapa.set(dia, store.round2((mapa.get(dia) || 0) + monto));
+  }
+  return mapa;
+}
+
+function ventasDelDia(pagos, fecha, reembolsos = new Map()) {
+  const bruto = pagos.reduce(
+    (total, pago) => (fechaLima(pago.fecha) === fecha ? total + Number(pago.monto) : total),
+    0,
   );
+  // Los reembolsos son contra-venta: se restan para no inflar "ventas de ayer".
+  return store.round2(bruto - (reembolsos.get(fecha) || 0));
 }
 
 // Últimos 7 días (incluido `fecha`) con los pagos agrupados por día operativo.
-function serieSemana(pagos, fecha) {
+function serieSemana(pagos, fecha, reembolsos = new Map()) {
   const dias = [];
   for (let desplazamiento = 6; desplazamiento >= 0; desplazamiento -= 1) {
     const dia = fechaEnDias(fecha, -desplazamiento);
@@ -74,6 +86,12 @@ function serieSemana(pagos, fecha) {
       continue;
     }
     dias[indice].monto = store.round2(dias[indice].monto + Number(pago.monto));
+  }
+  for (const [dia, monto] of reembolsos.entries()) {
+    const indice = posiciones.get(dia);
+    if (indice !== undefined) {
+      dias[indice].monto = store.round2(dias[indice].monto - monto);
+    }
   }
 
   return dias;
@@ -94,13 +112,22 @@ function getDashboardMemoria(fecha) {
     const dia = fechaLima(pago.fecha);
     return dia >= desdeSemana && dia <= fecha;
   });
-  const ventasAyer = ventasDelDia(pagosSemana, fechaEnDias(fecha, -1));
+  const reembolsosSemana = store.state.reembolsos.filter((item) => {
+    const dia = fechaLima(item.fecha);
+    return dia >= desdeSemana && dia <= fecha;
+  });
+  const reembolsosPorDia = mapaReembolsos(reembolsosSemana, 'fecha', 'monto');
+  const ventasAyer = ventasDelDia(pagosSemana, fechaEnDias(fecha, -1), reembolsosPorDia);
 
-  const ventas = sumBy(pagos, () => true, (pago) => pago.monto);
-  const egresos = store.round2(
-    sumBy(gastos, () => true, (gasto) => gasto.monto) +
-      sumBy(reembolsos, () => true, (item) => item.monto),
+  const totalReembolsosDia = store.round2(
+    sumBy(reembolsos, () => true, (item) => item.monto),
   );
+  // Los reembolsos son contra-venta: se restan de ventas, no se suman a egresos
+  // (si se hiciera en ambos lados, `ganancia_neta` los restaría dos veces).
+  const ventas = store.round2(
+    sumBy(pagos, () => true, (pago) => pago.monto) - totalReembolsosDia,
+  );
+  const egresos = store.round2(sumBy(gastos, () => true, (gasto) => gasto.monto));
 
   const detallePorPlatillo = new Map();
   const pedidosDelDia = new Set(pedidos.map((pedido) => pedido.id));
@@ -143,10 +170,11 @@ function getDashboardMemoria(fecha) {
   return {
     fecha,
     ventas_ayer: ventasAyer,
-    serie_semana: serieSemana(pagosSemana, fecha),
+    serie_semana: serieSemana(pagosSemana, fecha, reembolsosPorDia),
     kpis: {
       ventas,
       egresos,
+      reembolsos: totalReembolsosDia,
       ganancia_neta: store.round2(ventas - egresos),
       pedidos: pedidos.length,
       ticket_promedio: pagos.length > 0 ? store.round2(ventas / pagos.length) : 0,
@@ -274,6 +302,7 @@ async function getDashboardSupabase(fecha) {
     pagosSemana,
     gastos,
     reembolsos,
+    reembolsosSemana,
     pedidosDelDia,
     cuentasAbiertas,
     mesasOcupadas,
@@ -310,6 +339,15 @@ async function getDashboardSupabase(fecha) {
       'No se pudieron leer los reembolsos del día.',
     ),
     leerTodas(
+      () => repository
+        .table('devoluciones')
+        .select('monto_reembolsado,fecha_resolucion')
+        .eq('estado', 'aceptada')
+        .gte('fecha_resolucion', rangoDia(fechaEnDias(fecha, -6)).start)
+        .lt('fecha_resolucion', end),
+      'No se pudieron leer los reembolsos de la semana.',
+    ),
+    leerTodas(
       () => repository.table('pedidos').select('id').gte('fecha_pedido', start).lt('fecha_pedido', end),
       'No se pudieron leer los pedidos del día.',
     ),
@@ -337,17 +375,24 @@ async function getDashboardSupabase(fecha) {
     ),
   ]);
 
-  const ventas = store.round2(
-    pagos.reduce((sum, pago) => sum + Number(pago.monto), 0),
-  );
-  const ventasAyer = ventasDelDia(pagosSemana, fechaEnDias(fecha, -1));
-  const totalGastos = store.round2(
-    gastos.reduce((sum, gasto) => sum + Number(gasto.monto), 0),
-  );
   const totalReembolsos = store.round2(
     reembolsos.reduce((sum, item) => sum + Number(item.monto_reembolsado || 0), 0),
   );
-  const egresos = store.round2(totalGastos + totalReembolsos);
+  const reembolsosPorDia = mapaReembolsos(
+    reembolsosSemana,
+    'fecha_resolucion',
+    'monto_reembolsado',
+  );
+  const ventasAyer = ventasDelDia(pagosSemana, fechaEnDias(fecha, -1), reembolsosPorDia);
+  // Los reembolsos son contra-venta: se restan de ventas, no se suman a egresos
+  // (si se hiciera en ambos lados, `ganancia_neta` los restaría dos veces).
+  const ventas = store.round2(
+    pagos.reduce((sum, pago) => sum + Number(pago.monto), 0) - totalReembolsos,
+  );
+  const totalGastos = store.round2(
+    gastos.reduce((sum, gasto) => sum + Number(gasto.monto), 0),
+  );
+  const egresos = totalGastos;
 
   const alertasStock = insumos
     .filter((insumo) => insumo.activo && Number(insumo.stock_actual) <= Number(insumo.stock_minimo))
@@ -404,10 +449,11 @@ async function getDashboardSupabase(fecha) {
   return {
     fecha,
     ventas_ayer: ventasAyer,
-    serie_semana: serieSemana(pagosSemana, fecha),
+    serie_semana: serieSemana(pagosSemana, fecha, reembolsosPorDia),
     kpis: {
       ventas,
       egresos,
+      reembolsos: totalReembolsos,
       ganancia_neta: store.round2(ventas - egresos),
       pedidos: pedidosDelDia.length,
       ticket_promedio: pagos.length > 0 ? store.round2(ventas / pagos.length) : 0,

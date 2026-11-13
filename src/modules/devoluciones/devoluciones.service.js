@@ -548,6 +548,21 @@ async function registrarReembolsoSupabase(devolucion, payload, usuario) {
   );
   const fecha = db.nowIso();
 
+  // Tope: nunca reembolsar más que el total del pedido ni más de lo ya
+  // reembolsado. El total vive en `pedidos`; lo acumulado, en la devolución.
+  const pedido = await repository.getById('pedidos', devolucion.pedido_id);
+  const totalPedido = aNumero(pedido ? pedido.total : 0);
+  let yaReembolsado = aNumero(devolucion.monto_reembolsado);
+
+  if (yaReembolsado + monto > totalPedido + 0.009) {
+    throw new AppError(
+      400,
+      'REEMBOLSO_EXCESIVO',
+      'El monto excede el total del pedido o lo ya reembolsado.',
+      [{ total_pedido: totalPedido, ya_reembolsado: yaReembolsado, monto }],
+    );
+  }
+
   let pago;
   try {
     // El reembolso impacta la caja como pago del pedido (comportamiento
@@ -583,25 +598,43 @@ async function registrarReembolsoSupabase(devolucion, payload, usuario) {
     throw db.persistenceError('No se pudo registrar el reembolso de la devolución.', error);
   }
 
-  const patch = {
-    monto_reembolsado: db.round2(aNumero(devolucion.monto_reembolsado) + aNumero(monto)),
-    pago_id: pago.id,
-  };
+  // Acumulador sin lost-update: UPDATE condicional por el valor leído y un
+  // reintento si otra terminal lo cambió en el medio.
+  let actualizada = null;
+  for (let intento = 0; intento < 2 && actualizada === null; intento += 1) {
+    if (intento > 0) {
+      const fresca = await repository.getById('devoluciones', devolucion.id);
+      yaReembolsado = aNumero(fresca ? fresca.monto_reembolsado : yaReembolsado);
+      if (yaReembolsado + monto > totalPedido + 0.009) {
+        break;
+      }
+    }
+    const filas = await repository.updateWhere(
+      'devoluciones',
+      { id: devolucion.id, monto_reembolsado: yaReembolsado },
+      { monto_reembolsado: db.round2(yaReembolsado + monto), pago_id: pago.id },
+    );
+    if (filas && filas.length > 0) {
+      actualizada = filas[0];
+    }
+  }
 
-  let actualizada;
-  try {
-    actualizada = await repository.update('devoluciones', devolucion.id, patch);
-  } catch (error) {
+  if (actualizada === null) {
     try {
       await repository.remove('devolucion_reembolsos', reembolso.id);
       await repository.remove('pagos', pago.id);
     } catch (compensacionError) {
-      error.compensacion = compensacionError.message;
+      // El error original manda; la compensación queda anotada.
+      reembolso.compensacion = compensacionError.message;
     }
-    throw db.persistenceError('No se pudo actualizar la devolución con el reembolso.', error);
+    throw new AppError(
+      409,
+      'CONFLICT',
+      'Otro usuario registró un reembolso a la vez. Reintente con el saldo actualizado.',
+    );
   }
 
-  const [dto] = await enriquecerDevolucionesSupabase([actualizada || { ...devolucion, ...patch }]);
+  const [dto] = await enriquecerDevolucionesSupabase([actualizada]);
   return {
     reembolso: reembolsoDTO(reembolso),
     devolucion: dto,
@@ -630,6 +663,20 @@ async function registrarReembolso(id, body, usuario) {
     'observacion',
     { max: 200 },
   );
+
+  // Mismo tope que la rama Supabase: no exceder el total del pedido ni lo ya
+  // reembolsado (el reembolso es dinero real).
+  const pedido = store.find('pedidos', devolucion.pedido_id);
+  const totalPedido = pedido ? Number(pedido.total) : 0;
+  const yaReembolsado = aNumero(devolucion.monto_reembolsado);
+  if (yaReembolsado + monto > totalPedido + 0.009) {
+    throw new AppError(
+      400,
+      'REEMBOLSO_EXCESIVO',
+      'El monto excede el total del pedido o lo ya reembolsado.',
+      [{ total_pedido: totalPedido, ya_reembolsado: yaReembolsado, monto }],
+    );
+  }
 
   const reembolso = {
     id: store.nextId('devolucion_reembolsos'),

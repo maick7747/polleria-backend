@@ -82,6 +82,40 @@ async function leerPagosSupabase(fecha) {
   return filas;
 }
 
+async function totalReembolsosDelDia(fecha) {
+  const { start, end } = rangoDia(fecha);
+  if (!db.isSupabase()) {
+    return store.round2(
+      store.state.reembolsos
+        .filter((item) => fechaLima(item.fecha) === fecha)
+        .reduce((suma, item) => suma + Number(item.monto || 0), 0),
+    );
+  }
+
+  const filas = [];
+  for (let inicio = 0; ; inicio += LIMITE_FILAS) {
+    const { data, error } = await repository
+      .table('devoluciones')
+      .select('monto_reembolsado')
+      .eq('estado', 'aceptada')
+      .gte('fecha_resolucion', start)
+      .lt('fecha_resolucion', end)
+      .order('id', { ascending: true })
+      .range(inicio, inicio + LIMITE_FILAS - 1);
+    if (error) {
+      throw db.persistenceError('No se pudieron leer los reembolsos del día.', error);
+    }
+    const lote = data || [];
+    filas.push(...lote);
+    if (lote.length < LIMITE_FILAS) {
+      break;
+    }
+  }
+  return store.round2(
+    filas.reduce((suma, fila) => suma + Number(fila.monto_reembolsado || 0), 0),
+  );
+}
+
 async function listPagos(query = {}) {
   const fecha = optionalDate(query.fecha, 'fecha') || store.today();
 
@@ -95,11 +129,18 @@ async function listPagos(query = {}) {
       );
 
   const data = pagos.map(pagoDTO);
+  const totalBruto = store.round2(data.reduce((suma, pago) => suma + pago.monto, 0));
+  // Los reembolsos entran a `pagos` como filas positivas (para que afecten la
+  // caja) pero son contra-venta: el total del día se reporta neto. Mismo
+  // criterio que dashboard.service.js y cuadre-caja.service.js.
+  const reembolsos = await totalReembolsosDelDia(fecha);
 
   return {
     fecha,
     data,
-    total: store.round2(data.reduce((suma, pago) => suma + pago.monto, 0)),
+    total_bruto: totalBruto,
+    reembolsos,
+    total: store.round2(totalBruto - reembolsos),
     cantidad: data.length,
     por_metodo: agruparPorMetodo(data),
   };

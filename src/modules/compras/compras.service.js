@@ -602,6 +602,33 @@ async function registrarPago(id, body, usuario) {
   const monto = requiredNumber(payload.monto, 'monto', { min: 0.01 });
   const observacion = optionalString(payload.observacion, 'observacion', { max: 200 });
 
+  if (compra.estado === 'cancelada') {
+    throw new AppError(409, 'CONFLICT', 'Una compra cancelada no admite pagos.');
+  }
+
+  // El pago sale de la caja del día: mismo requisito que POST /gastos.
+  await db.requireCajaAbierta();
+
+  // Tope: la suma de pagos no puede exceder el total de la compra.
+  const pagosPrevios = db.isSupabase()
+    ? (await repository.list('pagos_compras', {
+        filters: { compra_id: compra.id },
+        limit: 1000,
+      })).data
+    : store.state.pagos_compras.filter((pago) => pago.compra_id === compra.id);
+  const totalCompra = aNumero(compra.total);
+  const yaPagado = store.round2(
+    pagosPrevios.reduce((suma, pago) => suma + aNumero(pago.monto), 0),
+  );
+  if (yaPagado + monto > totalCompra + 0.009) {
+    throw new AppError(
+      400,
+      'PAGO_EXCESIVO',
+      'El pago excede el saldo pendiente de la compra.',
+      [{ total: totalCompra, pagado: yaPagado, monto }],
+    );
+  }
+
   if (!db.isSupabase()) {
     const pago = {
       id: store.nextId('pagos_compras'),
