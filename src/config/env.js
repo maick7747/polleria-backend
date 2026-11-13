@@ -53,7 +53,6 @@ const env = {
   corsOrigin: process.env.CORS_ORIGIN || '*',
   logRequests: process.env.LOG_REQUESTS !== '0',
   slowRequestMs: asNumber(process.env.SLOW_REQUEST_MS, 3000),
-
   // Integraciones — validación de documentos (patrón Strategy).
   documentoProvider: process.env.DOCUMENTO_PROVIDER || 'mock',
   documentoFallback: process.env.DOCUMENTO_FALLBACK || 'mock',
@@ -76,5 +75,22 @@ const env = {
   sunatCertificadoRuta: process.env.SUNAT_CERTIFICADO_RUTA || '',
   sunatTimeoutMs: asNumber(process.env.SUNAT_TIMEOUT_MS, 15000),
 };
+
+// ---------------------------------------------------------------------
+// Validaciones de seguridad en producción.
+// Render define RENDER=1; NODE_ENV=production lo puede fijar cualquier host.
+// ---------------------------------------------------------------------
+const enProduccion = env.nodeEnv === 'production' || Boolean(process.env.RENDER);
+
+if (enProduccion && !process.env.JWT_SECRET) {
+  throw new Error(
+    'JWT_SECRET es obligatorio en producción (Render define RENDER=1). ' +
+      'Sin él, la API firmaría tokens con el secreto de demo publicado en el repo.',
+  );
+}
+
+if (enProduccion && !process.env.CORS_ORIGIN) {
+  console.warn('[env] CORS_ORIGIN no definido: CORS abierto (*) en producción.');
+}
 
 module.exports = env;

@@ -4,9 +4,12 @@ const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
+const helmet = require('helmet');
+const { rateLimit } = require('express-rate-limit');
 
 const env = require('./config/env');
 const authMiddleware = require('./middleware/auth');
+const { requireRoles } = require('./middleware/roles');
 const { notFoundHandler, errorHandler } = require('./middleware/error');
 const { metricsMiddleware, snapshot } = require('./middleware/metrics');
 
@@ -35,6 +38,15 @@ const app = express();
 
 app.disable('x-powered-by');
 
+// Render/Vercel llegan detrás de un proxy: sin esto req.ip sería la IP del
+// proxy y el rate limit contaría a todos los usuarios como uno solo.
+if (env.nodeEnv === 'production' || process.env.RENDER) {
+  app.set('trust proxy', 1);
+}
+
+// Cabeceras de endurecimiento (nosniff, HSTS, frameguard…). No cambia CORS ni ETag.
+app.use(helmet());
+
 app.use(compression());
 
 app.use(
@@ -44,6 +56,34 @@ app.use(
   }),
 );
 app.use(express.json({ limit: '1mb' }));
+
+// ---------------------------------------------------------------------
+// Rate limiting: frena el brute force del login (scryptSync bloquea el
+// event loop ~100 ms por intento) y las ráfagas anónimas.
+// Express-rate-limit v7 es compatible con Express 5.
+// ---------------------------------------------------------------------
+const limitGlobal = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const limitLogin = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'MUCHOS_INTENTOS',
+      message: 'Demasiados intentos de inicio de sesión. Espere un minuto.',
+    },
+  },
+});
+
+app.use('/api', limitGlobal);
+app.use('/api/auth/login', limitLogin);
 
 app.use((req, res, next) => {
   req.id = req.get('X-Request-Id') || `req_${crypto.randomUUID()}`;
@@ -83,7 +123,14 @@ app.get('/api/health', (req, res) => {
 // No forma parte del contrato de la API ni se consume desde el frontend.
 // Solo devuelve agregados en memoria (método, patrón de ruta, duraciones y
 // errores 5xx): nunca cuerpos, parámetros, cabeceras ni datos de clientes.
-app.get('/api/metrics', (req, res) => {
+// Requiere sesión con rol Admin (ver montaje en protectedApi).
+
+app.use('/api/auth', authRoutes);
+
+const protectedApi = express.Router();
+protectedApi.use(authMiddleware);
+
+protectedApi.get('/metrics', requireRoles('Dueño/Admin', 'Admin'), (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     nota:
@@ -92,11 +139,6 @@ app.get('/api/metrics', (req, res) => {
     ...snapshot(),
   });
 });
-
-app.use('/api/auth', authRoutes);
-
-const protectedApi = express.Router();
-protectedApi.use(authMiddleware);
 
 protectedApi.use('/dashboard', dashboardRoutes);
 protectedApi.use('/venta-local', ventaLocalRoutes);
