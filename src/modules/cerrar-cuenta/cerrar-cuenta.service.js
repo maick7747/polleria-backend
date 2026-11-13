@@ -290,42 +290,72 @@ async function cobrarCuenta(id, body, usuario) {
   const ahora = db.nowIso();
   const numero = cuenta.comprobante_numero || await db.nextComprobanteNumero();
 
-  // Sin transacción: se actualizan las rondas, la cuenta, la mesa y el pago.
-  // Si un paso falla, se informa PERSISTENCIA_ERROR (ver docs/PERSISTENCIA.md).
-  for (const pedido of rondas) {
-    await repository.update('pedidos', pedido.id, {
-      estado: 'cobrado',
-      estado_pago: 'pagado',
-      metodo_pago: metodo,
+  const sunatInicial = sunat.estadoInicial();
+  let pago;
+  let fechaCobro = ahora;
+
+  // Cobro transaccional (migración 017): el UPDATE condicional por estado es
+  // el candado contra el doble cobro. Si la función no existe, se usa el
+  // camino JS anterior (varias escrituras, sin transacción).
+  try {
+    const resultado = await repository.rpc('fn_cobrar_cuenta', {
+      p_cuenta_id: cuenta.id,
+      p_metodo: metodo,
+      p_total: total,
+      p_usuario_id: usuario.id,
+      p_numero: numero,
+      p_sunat_modo: sunatInicial.modo,
+      p_sunat_estado: sunatInicial.estado,
+      p_sunat_mensaje: sunatInicial.mensaje,
+    });
+    pago = { ...resultado.pago, monto: Number(resultado.pago.monto) };
+    fechaCobro = resultado.fecha || fechaCobro;
+  } catch (error) {
+    if (!repository.esFuncionInexistente(error)) {
+      if (/CUENTA_NO_ABIERTA/.test(String(error.message || ''))) {
+        throw new AppError(
+          409,
+          'CUENTA_YA_COBRADA',
+          'La cuenta ya no está abierta: otra terminal pudo cobrarla.',
+        );
+      }
+      throw error;
+    }
+
+    // Fallback para entornos sin la migración 017.
+    for (const pedido of rondas) {
+      await repository.update('pedidos', pedido.id, {
+        estado: 'cobrado',
+        estado_pago: 'pagado',
+        metodo_pago: metodo,
+        comprobante_numero: numero,
+      });
+    }
+
+    await repository.update('cuentas', cuenta.id, {
+      estado: 'cobrada',
+      total,
+      fecha_cierre: ahora,
+      usuario_cierre_id: usuario.id,
       comprobante_numero: numero,
+      sunat_modo: sunatInicial.modo,
+      sunat_estado: sunatInicial.estado,
+      sunat_codigo: null,
+      sunat_mensaje: sunatInicial.mensaje,
+      sunat_ticket: null,
+      sunat_fecha_envio: null,
+    });
+
+    await repository.update('mesas', cuenta.mesa_id, { estado: 'libre' });
+
+    pago = await repository.insert('pagos', {
+      cuenta_id: cuenta.id,
+      metodo,
+      monto: total,
+      usuario_id: usuario.id,
+      fecha: ahora,
     });
   }
-
-  const sunatInicial = sunat.estadoInicial();
-
-  await repository.update('cuentas', cuenta.id, {
-    estado: 'cobrada',
-    total,
-    fecha_cierre: ahora,
-    usuario_cierre_id: usuario.id,
-    comprobante_numero: numero,
-    sunat_modo: sunatInicial.modo,
-    sunat_estado: sunatInicial.estado,
-    sunat_codigo: null,
-    sunat_mensaje: sunatInicial.mensaje,
-    sunat_ticket: null,
-    sunat_fecha_envio: null,
-  });
-
-  await repository.update('mesas', cuenta.mesa_id, { estado: 'libre' });
-
-  const pago = await repository.insert('pagos', {
-    cuenta_id: cuenta.id,
-    metodo,
-    monto: total,
-    usuario_id: usuario.id,
-    fecha: ahora,
-  });
 
   return {
     cuenta: await cuentaDetalle(cuenta.id),
@@ -334,7 +364,7 @@ async function cobrarCuenta(id, body, usuario) {
       tipo: cuenta.comprobante_tipo,
       numero,
       total,
-      fecha: ahora,
+      fecha: fechaCobro,
       sunat: { ...sunatInicial },
     },
     vuelto: store.round2(Math.max(0, montoEntregado - total)),

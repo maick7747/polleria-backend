@@ -32,6 +32,7 @@ const FILES_BASE = [
   'migrations/014_turnos_usuario.sql',
   'migrations/015_cliente_correo.sql',
   'migrations/016_rls_cierre_y_realtime.sql',
+  'migrations/017_rpc_cobrar_cuenta.sql',
   'seed.sql',
 ];
 
