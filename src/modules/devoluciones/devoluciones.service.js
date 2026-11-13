@@ -404,11 +404,20 @@ async function resolverDevolucionSupabase(devolucion, payload, usuario) {
     };
     let actualizada;
     try {
-      actualizada = await repository.update('devoluciones', devolucion.id, patch);
+      // UPDATE condicional: solo gana quien encuentra la devolución 'pendiente'.
+      const filas = await repository.updateWhere(
+        'devoluciones',
+        { id: devolucion.id, estado: 'pendiente' },
+        patch,
+      );
+      actualizada = filas && filas.length > 0 ? filas[0] : null;
     } catch (error) {
       throw db.persistenceError('No se pudo rechazar la devolución.', error);
     }
-    const [dto] = await enriquecerDevolucionesSupabase([actualizada || { ...devolucion, ...patch }]);
+    if (!actualizada) {
+      throw new AppError(409, 'CONFLICT', 'La devolución ya fue resuelta por otra terminal.');
+    }
+    const [dto] = await enriquecerDevolucionesSupabase([actualizada]);
     return dto;
   }
 
@@ -441,7 +450,14 @@ async function resolverDevolucionSupabase(devolucion, payload, usuario) {
 
   let actualizada;
   try {
-    actualizada = await repository.update('devoluciones', devolucion.id, patch);
+    // UPDATE condicional: si otra terminal ya resolvió, no se publica la merma
+    // creada arriba (se elimina como compensación).
+    const filas = await repository.updateWhere(
+      'devoluciones',
+      { id: devolucion.id, estado: 'pendiente' },
+      patch,
+    );
+    actualizada = filas && filas.length > 0 ? filas[0] : null;
   } catch (error) {
     // Compensación: la merma ya se insertó y la devolución no se actualizó.
     if (merma) {
@@ -454,7 +470,18 @@ async function resolverDevolucionSupabase(devolucion, payload, usuario) {
     throw db.persistenceError('No se pudo resolver la devolución.', error);
   }
 
-  const [dto] = await enriquecerDevolucionesSupabase([actualizada || { ...devolucion, ...patch }]);
+  if (!actualizada) {
+    if (merma) {
+      try {
+        await repository.remove('mermas', merma.id);
+      } catch (compensacionError) {
+        // La merma duplicada queda para revisión manual; el 409 es lo importante.
+      }
+    }
+    throw new AppError(409, 'CONFLICT', 'La devolución ya fue resuelta por otra terminal.');
+  }
+
+  const [dto] = await enriquecerDevolucionesSupabase([actualizada]);
   return dto;
 }
 

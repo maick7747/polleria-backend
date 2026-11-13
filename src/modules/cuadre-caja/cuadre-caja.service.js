@@ -458,22 +458,32 @@ async function cierre(id, body, usuario) {
     );
   }
 
+  let cerrados;
   try {
-    await repository.update('cuadres_caja', cuadre.id, {
-      estado: 'cerrada',
-      total_ventas: resumen.total_ventas,
-      total_egresos: resumen.total_egresos,
-      monto_esperado: resumen.monto_esperado,
-      efectivo_contado: efectivo,
-      pagos_digitales: digitales,
-      total_real: resumen.total_real,
-      diferencia: resumen.diferencia,
-      observaciones,
-      usuario_cierre_id: usuario.id,
-      fecha_cierre: db.nowIso(),
-    });
+    // UPDATE condicional: evita que dos terminales cierren la misma caja.
+    cerrados = await repository.updateWhere(
+      'cuadres_caja',
+      { id: cuadre.id, estado: 'abierta' },
+      {
+        estado: 'cerrada',
+        total_ventas: resumen.total_ventas,
+        total_egresos: resumen.total_egresos,
+        monto_esperado: resumen.monto_esperado,
+        efectivo_contado: efectivo,
+        pagos_digitales: digitales,
+        total_real: resumen.total_real,
+        diferencia: resumen.diferencia,
+        observaciones,
+        usuario_cierre_id: usuario.id,
+        fecha_cierre: db.nowIso(),
+      },
+    );
   } catch (error) {
     throw db.persistenceError('No se pudo cerrar el cuadre de caja.', error);
+  }
+
+  if (!cerrados || cerrados.length === 0) {
+    throw new AppError(409, 'CONFLICT', 'El cuadre ya fue cerrado por otra terminal.');
   }
 
   return getCuadrePorId(cuadre.id);

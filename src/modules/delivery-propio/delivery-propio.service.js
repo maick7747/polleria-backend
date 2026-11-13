@@ -715,13 +715,24 @@ async function registrarEntrega(id, body, usuario) {
 
   let actualizado;
   try {
-    actualizado = await repository.update('pedidos', pedido.id, {
-      estado: 'cobrado',
-      estado_pago: 'pagado',
-      metodo_pago: metodo,
-      fecha_entrega: pedido.fecha_entrega || ahora,
-      estado_entrega: 'entregado',
-    });
+    // UPDATE condicional: solo una terminal puede pasar el pedido a cobrado.
+    // Si otra ya lo cobró, se elimina el pago recién insertado.
+    const filas = await repository.updateWhere(
+      'pedidos',
+      {
+        id: pedido.id,
+        estado_pago: 'pendiente',
+        estado: ['borrador', 'en_cocina', 'servido'],
+      },
+      {
+        estado: 'cobrado',
+        estado_pago: 'pagado',
+        metodo_pago: metodo,
+        fecha_entrega: pedido.fecha_entrega || ahora,
+        estado_entrega: 'entregado',
+      },
+    );
+    actualizado = filas && filas.length > 0 ? filas[0] : null;
   } catch (error) {
     try {
       await repository.remove('pagos', pago.id);
@@ -734,7 +745,20 @@ async function registrarEntrega(id, body, usuario) {
     );
   }
 
-  const dto = await pedidosDb.pedidoConDetalles(actualizado || pedido);
+  if (!actualizado) {
+    try {
+      await repository.remove('pagos', pago.id);
+    } catch (limpieza) {
+      // el pago queda huérfano; el 409 se informa igual
+    }
+    throw new AppError(
+      409,
+      'CONFLICT',
+      'El pedido ya fue cobrado o cancelado por otra terminal.',
+    );
+  }
+
+  const dto = await pedidosDb.pedidoConDetalles(actualizado);
   return {
     pedido: { ...dto, estado_entrega: 'entregado' },
     pago: { ...pago, monto: aNumero(pago.monto) },
