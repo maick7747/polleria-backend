@@ -2,14 +2,7 @@
 
 const { AppError } = require('../middleware/error');
 const { hashPassword } = require('../lib/password');
-
-function round2(value) {
-  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
-}
-
-function round3(value) {
-  return Math.round((Number(value) + Number.EPSILON) * 1000) / 1000;
-}
+const { round2, round3 } = require('../lib/moneda');
 
 const LIMA_OFFSET_MINUTES = -300;
 

@@ -6,6 +6,8 @@
 // BETA de SUNAT (que valida estructura, no efectos tributarios) y como base
 // para cuando se integre un certificado digital en producción.
 
+const { round2 } = require('../moneda');
+
 function esc(valor) {
   return String(valor === null || valor === undefined ? '' : valor)
     .replace(/&/g, '&amp;')
@@ -16,7 +18,7 @@ function esc(valor) {
 }
 
 function dosDecimales(valor) {
-  return (Number(valor) || 0).toFixed(2);
+  return round2(Number(valor) || 0).toFixed(2);
 }
 
 function separarNumero(numero) {
