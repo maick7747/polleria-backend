@@ -284,6 +284,44 @@ function stop(child) {
     }
     const total = detalleCuenta.body.total_consolidado;
 
+    // Regla 2026-11-14: no se cobra con platos sin entregar.
+    const cobroBloqueado = await request(base, 'POST', `/cuentas/${cuentaId}/cobrar`, {
+      token,
+      body: { metodo: 'efectivo', monto: total },
+    });
+    const bloqueoOk =
+      cobroBloqueado.status === 409 &&
+      cobroBloqueado.body?.error?.code === 'PLATOS_NO_ENTREGADOS';
+    push(
+      'POST /api/cuentas/:id/cobrar (bloqueado sin entrega)',
+      bloqueoOk ? 409 : 500,
+      bloqueoOk
+        ? `code=${cobroBloqueado.body.error.code}`
+        : JSON.stringify(cobroBloqueado.body),
+    );
+    if (!bloqueoOk) {
+      throw new Error(
+        `Cobrar sin entregar debía devolver 409 PLATOS_NO_ENTREGADOS: ${JSON.stringify(cobroBloqueado.body)}`,
+      );
+    }
+
+    const entrega = await request(
+      base,
+      'PATCH',
+      `/kds/pedidos/${pedidoId}/platos/${detalleId}/entregar`,
+      { token, body: {} },
+    );
+    push(
+      'PATCH /api/kds/.../platos/:detalleId/entregar',
+      entrega.status,
+      entrega.ok
+        ? `detalle=${detalleId} · entregado_en=${entrega.body.detalle && entrega.body.detalle.entregado_en}`
+        : JSON.stringify(entrega.body),
+    );
+    if (!entrega.ok) {
+      throw new Error(`Entregar el plato falló: ${JSON.stringify(entrega.body)}`);
+    }
+
     const cobro = await request(base, 'POST', `/cuentas/${cuentaId}/cobrar`, {
       token,
       body: { metodo: 'efectivo', monto: total },

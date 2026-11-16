@@ -96,12 +96,16 @@ function normalizarPedido(pedido, extras = {}) {
   };
 }
 
-function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta) {
+function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta, totalesPorCuenta = new Map()) {
   const porMesa = new Map(cuentasAbiertas.map((cuenta) => [cuenta.mesa_id, cuenta]));
   const mesasActivas = mesas.filter((mesa) => mesa.activa !== false);
   const mesasOcupadas = mesasActivas.filter((mesa) => porMesa.has(mesa.id)).length;
+  const totalDe = (cuenta) => {
+    const totales = totalesPorCuenta.get(cuenta.id);
+    return totales ? totales.total : num(cuenta.total);
+  };
   const totalAbierto = Math.round(
-    cuentasAbiertas.reduce((suma, cuenta) => suma + num(cuenta.total), 0) * 100,
+    cuentasAbiertas.reduce((suma, cuenta) => suma + totalDe(cuenta), 0) * 100,
   ) / 100;
 
   return {
@@ -128,7 +132,7 @@ function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta) {
           cuenta_abierta: cuenta
             ? {
                 id: cuenta.id,
-                total: num(cuenta.total),
+                total: totalDe(cuenta),
                 fecha_apertura: cuenta.fecha_apertura,
                 usuario_apertura_id: cuenta.usuario_apertura_id,
                 usuario_apertura_nombre: cuenta.usuario_apertura_nombre ?? null,
@@ -140,11 +144,18 @@ function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta) {
       }),
     cuentas: cuentasAbiertas.map((cuenta) => {
       const rondas = pedidosPorCuenta.get(cuenta.id) || [];
+      const totales = totalesPorCuenta.get(cuenta.id) || {
+        subtotal: num(cuenta.total),
+        igv: 0,
+        total: num(cuenta.total),
+      };
       return {
         id: cuenta.id,
         mesa_id: cuenta.mesa_id,
         estado: cuenta.estado,
-        total: num(cuenta.total),
+        subtotal: totales.subtotal,
+        igv: totales.igv,
+        total: totales.total,
         fecha_apertura: cuenta.fecha_apertura,
         usuario_apertura_id: cuenta.usuario_apertura_id,
         usuario_apertura_nombre: cuenta.usuario_apertura_nombre ?? null,
@@ -159,6 +170,20 @@ function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta) {
       };
     }),
   };
+}
+
+function totalesDeRondasMemoria(rondas) {
+  const subtotal = store.round2(
+    rondas.reduce((suma, pedido) => suma + num(pedido.subtotal), 0),
+  );
+  return store.calcTotals(subtotal);
+}
+
+async function totalesDeRondasDb(rondas) {
+  const subtotal = store.round2(
+    rondas.reduce((suma, pedido) => suma + num(pedido.subtotal), 0),
+  );
+  return db.calcTotals(subtotal);
 }
 
 function obtenerTableroMemoria() {
@@ -186,7 +211,12 @@ function obtenerTableroMemoria() {
     pedidosPorCuenta.set(pedido.cuenta_id, lista);
   }
 
-  return armarTablero(store.state.mesas, cuentasAbiertas, pedidosPorCuenta);
+  const totalesPorCuenta = new Map();
+  for (const [cuentaId, rondas] of pedidosPorCuenta.entries()) {
+    totalesPorCuenta.set(cuentaId, totalesDeRondasMemoria(rondas));
+  }
+
+  return armarTablero(store.state.mesas, cuentasAbiertas, pedidosPorCuenta, totalesPorCuenta);
 }
 
 // repository.list limita a 100 filas por página; esta helper recorre las
@@ -329,7 +359,15 @@ async function obtenerTableroSupabase() {
     };
   });
 
-  return armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta);
+  const paresTotales = await Promise.all(
+    [...pedidosPorCuenta.entries()].map(async ([cuentaId, rondas]) => [
+      cuentaId,
+      await totalesDeRondasDb(rondas),
+    ]),
+  );
+  const totalesPorCuenta = new Map(paresTotales);
+
+  return armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta, totalesPorCuenta);
 }
 
 async function obtenerTablero() {

@@ -632,8 +632,8 @@ function resumen(value) {
     }
 
     const cuentaId = listaCuentas[0].id;
-    const totalAntes = (await request(base, 'GET', `/cuentas/${cuentaId}`, { token })).body
-      .total_consolidado;
+    const detalleAntes = (await request(base, 'GET', `/cuentas/${cuentaId}`, { token })).body;
+    const totalAntes = detalleAntes.total_consolidado;
     const idempotencyKey = `smoke-${Date.now()}-ronda`;
     const ronda1 = await request(base, 'POST', `/cuentas/${cuentaId}/pedidos`, {
       token,
@@ -651,7 +651,17 @@ function resumen(value) {
     });
     const totalDespues = (await request(base, 'GET', `/cuentas/${cuentaId}`, { token })).body
       .total_consolidado;
-    const totalEsperado = Number((Number(totalAntes) + Number(ronda1.body.total)).toFixed(2));
+    // IGV sobre el total de la cuenta (18 %, mínimo S/ 70): la ronda puede
+    // hacer que la cuenta entera cruce el umbral, así que no basta sumar el
+    // total de la ronda al total anterior.
+    const subtotalAntes = Number(detalleAntes.subtotal ?? 0);
+    const subtotalEsperado = Number(
+      (subtotalAntes + Number(ronda1.body.subtotal)).toFixed(2),
+    );
+    const igvEsperado = subtotalEsperado >= 70
+      ? Number(((subtotalEsperado * 18) / 100).toFixed(2))
+      : 0;
+    const totalEsperado = Number((subtotalEsperado + igvEsperado).toFixed(2));
     const idempotenteOk =
       ronda1.ok &&
       ronda2.ok &&
@@ -741,17 +751,19 @@ function resumen(value) {
       pedidoKds1.listo === false &&
       pedidoKds1.todos_entregados === false &&
       pedidoKds1.estado_entrega === 'pendiente' &&
-      !enBandeja1;
+      // Regla 2026-11-14: el aviso nace por plato. La bebida ya está lista,
+      // así que el pedido aparece en la bandeja aunque el pollo siga en cocina.
+      enBandeja1;
     results.push({
-      name: 'KDS v2: bebida nace lista y no bloquea',
+      name: 'KDS v2: bebida nace lista y avisa al mozo',
       status: bebidaNaceListaOk ? 200 : 500,
       detail: bebidaNaceListaOk
-        ? `pedido=${rondaKds.body.id} · bebida=${lineaBebida.estado_preparacion}/bar · pollo=${lineaPollo.estado_preparacion}`
+        ? `pedido=${rondaKds.body.id} · bebida=${lineaBebida.estado_preparacion}/bar · pollo=${lineaPollo.estado_preparacion} · en bandeja`
         : JSON.stringify({ ronda: rondaKds.body, pedidoKds: pedidoKds1, enBandeja: enBandeja1 }),
     });
     if (!bebidaNaceListaOk) {
       throw new Error(
-        `La bebida no nació lista ni quedó fuera de la bandeja: ${JSON.stringify({ pedidoKds: pedidoKds1, enBandeja: enBandeja1 })}`,
+        `La bebida lista no generó el aviso parcial al mozo: ${JSON.stringify({ pedidoKds: pedidoKds1, enBandeja: enBandeja1 })}`,
       );
     }
 
@@ -820,6 +832,14 @@ function resumen(value) {
     const lineaBebida2 = pedidoKds2
       ? pedidoKds2.detalles.find((detalle) => detalle.id === lineaBebida.id)
       : null;
+    const bandejaTrasBebida = await request(
+      base,
+      'GET',
+      '/pedidos-listos?page=1&limit=100&desde=2026-01-01',
+      { token },
+    );
+    const sigueEnBandeja = (bandejaTrasBebida.body.data || [])
+      .some((pedido) => pedido.id === rondaKds.body.id);
     const entregaLineaOk =
       entregaLineaKds.status === 200 &&
       entregaLineaKds.body?.pedido_estado_entrega === 'pendiente' &&
@@ -827,13 +847,16 @@ function resumen(value) {
       Boolean(entregaLineaKds.body?.detalle?.entregado_en) &&
       Boolean(lineaBebida2) &&
       Boolean(lineaBebida2.entregado_en) &&
-      pedidoKds2.todos_entregados === false;
+      pedidoKds2.todos_entregados === false &&
+      // Sin líneas listas pendientes, el aviso desaparece aunque el pollo
+      // siga en preparación.
+      !sigueEnBandeja;
     results.push({
       name: 'PATCH /api/kds/.../platos/:detalleId/entregar (línea)',
       status: entregaLineaOk ? 200 : 500,
       detail: entregaLineaOk
-        ? `detalle=${lineaBebida.id} · entregado_en=${entregaLineaKds.body.detalle.entregado_en}`
-        : JSON.stringify({ respuesta: entregaLineaKds.body, pedidoKds: pedidoKds2 }),
+        ? `detalle=${lineaBebida.id} · entregado_en=${entregaLineaKds.body.detalle.entregado_en} · fuera de la bandeja`
+        : JSON.stringify({ respuesta: entregaLineaKds.body, pedidoKds: pedidoKds2, sigueEnBandeja }),
     });
     if (!entregaLineaOk) {
       throw new Error('La entrega de una línea no persistió en el KDS.');

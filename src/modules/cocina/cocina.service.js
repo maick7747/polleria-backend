@@ -8,7 +8,6 @@ const {
   requiredObject,
   requiredEnum,
   optionalDate,
-  pageParams,
   paginate,
   parseId,
 } = require('../../middleware/validate');
@@ -561,32 +560,56 @@ async function pedidosListos(query = {}) {
   const desde = optionalDate(query.desde, 'desde');
   const hasta = optionalDate(query.hasta, 'hasta');
 
+  // Un aviso nace cuando UNA línea está lista y todavía no se entregó. Antes
+  // se exigía que el pedido completo estuviera `servido`, así que una ronda
+  // mixta (bebida lista + pollo en parrilla) no aparecía y el mozo no podía
+  // entregar la bebida hasta que cocina terminara todo.
+  const hayLineaLista = (detalles) =>
+    detalles.some(
+      (detalle) => detalle.estado_preparacion === 'listo' && !detalle.entregado_en,
+    );
+
+  const fechaListoDeAviso = (pedido, detalles) => {
+    const fechas = detalles
+      .filter((detalle) => detalle.estado_preparacion === 'listo' && !detalle.entregado_en)
+      .map((detalle) => detalle.fecha_listo)
+      .filter(Boolean)
+      .sort();
+    return fechas[0] || pedido.fecha_listo || pedido.fecha_pedido || null;
+  };
+
+  const aDto = (pedido, detalles, mesaNumero) => {
+    const fechaListo = fechaListoDeAviso(pedido, detalles);
+    return {
+      id: pedido.id,
+      numero: pedido.numero,
+      canal: pedido.canal,
+      tipo_consumo: pedido.tipo_consumo,
+      mesa_numero: mesaNumero || null,
+      cuenta_id: pedido.cuenta_id,
+      estado_entrega: pedido.estado_entrega || null,
+      entregado_en: pedido.fecha_entrega || null,
+      todos_entregados: detalles.length > 0
+        && detalles.every((item) => Boolean(item.entregado_en)),
+      fecha_listo: fechaListo,
+      minutos_esperando: minutosDesde(fechaListo),
+      detalles,
+    };
+  };
+
   if (!db.isSupabase()) {
     const data = store.state.pedidos
-      .filter((pedido) => pedido.estado === 'servido' && pedido.estado_pago !== 'pagado')
+      .filter((pedido) => ESTADOS_ACTIVOS.includes(pedido.estado) && pedido.estado_pago !== 'pagado')
       .filter((pedido) => !pedido.fecha_entrega && pedido.estado_entrega !== 'entregado')
+      .map((pedido) => {
+        const detalles = pedidosLib.detallesDePedido(pedido.id);
+        const mesa = pedido.mesa_id ? store.find('mesas', pedido.mesa_id) : null;
+        return aDto(pedido, detalles, mesa ? mesa.numero : null);
+      })
+      .filter((pedido) => hayLineaLista(pedido.detalles))
       .filter((pedido) => !desde || fechaLima(pedido.fecha_listo) >= desde)
       .filter((pedido) => !hasta || fechaLima(pedido.fecha_listo) <= hasta)
-      .sort((a, b) => (b.fecha_listo || b.fecha_pedido).localeCompare(a.fecha_listo || a.fecha_pedido))
-      .map((pedido) => {
-        const detalle = pedidosLib.pedidoConDetalles(pedido);
-        const mesa = pedido.mesa_id ? store.find('mesas', pedido.mesa_id) : null;
-        return {
-          id: pedido.id,
-          numero: pedido.numero,
-          canal: pedido.canal,
-          tipo_consumo: pedido.tipo_consumo,
-          mesa_numero: mesa ? mesa.numero : null,
-          cuenta_id: pedido.cuenta_id,
-          estado_entrega: pedido.estado_entrega || null,
-          entregado_en: pedido.fecha_entrega || null,
-          todos_entregados: detalle.detalles.length > 0
-            && detalle.detalles.every((item) => Boolean(item.entregado_en)),
-          fecha_listo: pedido.fecha_listo,
-          minutos_esperando: minutosDesde(pedido.fecha_listo),
-          detalles: detalle.detalles,
-        };
-      });
+      .sort((a, b) => String(b.fecha_listo || '').localeCompare(String(a.fecha_listo || '')));
 
     const resultado = paginate(data, query);
     return {
@@ -595,29 +618,18 @@ async function pedidosListos(query = {}) {
     };
   }
 
-  const filters = {
-    estado: 'servido',
-    estado_pago: { op: 'neq', value: 'pagado' },
-    // Un pedido totalmente entregado deja la bandeja para todos.
-    fecha_entrega: null,
-  };
-  if (desde || hasta) {
-    filters.fecha_listo = {
-      op: 'between',
-      value: [
-        `${desde || '1970-01-01'}T00:00:00-05:00`,
-        `${hasta || '2999-12-31'}T23:59:59.999-05:00`,
-      ],
-    };
-  }
-
-  const { page, limit } = pageParams(query);
-  const { data: pedidos, meta } = await repository.list('pedidos', {
-    filters,
-    orderBy: 'fecha_listo',
+  // Se traen los pedidos activos recientes y se filtra por línea en memoria:
+  // PostgREST no permite filtrar por una tabla relacionada con `repository`.
+  // El volumen es pequeño (avisos pendientes), así que se pagina después.
+  const { data: pedidos } = await repository.list('pedidos', {
+    filters: {
+      estado: ESTADOS_ACTIVOS,
+      estado_pago: { op: 'neq', value: 'pagado' },
+      fecha_entrega: null,
+    },
+    orderBy: 'fecha_pedido',
     ascending: false,
-    page,
-    limit,
+    limit: 500,
   });
 
   const [detallesMap, mesasMap] = await Promise.all([
@@ -627,26 +639,18 @@ async function pedidosListos(query = {}) {
 
   const data = pedidos
     .filter((pedido) => pedido.estado_entrega !== 'entregado')
-    .map((pedido) => {
-      const detalles = detallesMap.get(pedido.id) || [];
-      return {
-        id: pedido.id,
-        numero: pedido.numero,
-        canal: pedido.canal,
-        tipo_consumo: pedido.tipo_consumo,
-        mesa_numero: mesasMap.get(pedido.mesa_id) || null,
-        cuenta_id: pedido.cuenta_id,
-        estado_entrega: pedido.estado_entrega || null,
-        entregado_en: pedido.fecha_entrega || null,
-        todos_entregados: detalles.length > 0
-          && detalles.every((item) => Boolean(item.entregado_en)),
-        fecha_listo: pedido.fecha_listo,
-        minutos_esperando: minutosDesde(pedido.fecha_listo),
-        detalles,
-      };
-    });
+    .map((pedido) => aDto(
+      pedido,
+      detallesMap.get(pedido.id) || [],
+      mesasMap.get(pedido.mesa_id),
+    ))
+    .filter((pedido) => hayLineaLista(pedido.detalles))
+    .filter((pedido) => !desde || fechaLima(pedido.fecha_listo) >= desde)
+    .filter((pedido) => !hasta || fechaLima(pedido.fecha_listo) <= hasta)
+    .sort((a, b) => String(b.fecha_listo || '').localeCompare(String(a.fecha_listo || '')));
 
-  return { data, meta: { ...meta, generado_en: db.nowIso() } };
+  const resultado = paginate(data, query);
+  return { ...resultado, meta: { ...resultado.meta, generado_en: db.nowIso() } };
 }
 
 // ---------------------------------------------------------------------

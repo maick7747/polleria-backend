@@ -33,6 +33,7 @@ const FILES_BASE = [
   'migrations/015_cliente_correo.sql',
   'migrations/016_rls_cierre_y_realtime.sql',
   'migrations/017_rpc_cobrar_cuenta.sql',
+  'migrations/018_cobro_requiere_entrega.sql',
   'seed.sql',
 ];
 

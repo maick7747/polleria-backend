@@ -13,9 +13,47 @@ const {
 } = require('../../middleware/validate');
 const pedidosLib = require('../../lib/pedidos');
 const pedidosDb = require('../../lib/pedidos-db');
+const cuentaTotales = require('../../lib/cuenta-totales');
+const { generarBoletaPdf } = require('../../lib/boletaPdf');
 const sunat = require('../../lib/sunat');
 
 const METODOS = ['efectivo', 'tarjeta', 'yape', 'plin', 'transferencia'];
+
+// Datos fijos del emisor. Se pueden sobreescribir con claves de `configuracion`
+// (`negocio_nombre`, `ruc`, `negocio_direccion`, `negocio_telefono`).
+const NEGOCIO = {
+  nombre: "Fratelli's Restaurante",
+  ruc: '10759888079',
+  direccion: 'Av. Ferrocarril N° 973, El Tambo, Huancayo, Junín',
+  telefono: '',
+};
+
+async function datosNegocio() {
+  const leer = async (clave) => {
+    try {
+      const valor = await db.getConfig(clave);
+      return valor === undefined || valor === null || String(valor).trim() === ''
+        ? null
+        : String(valor).trim();
+    } catch {
+      return null;
+    }
+  };
+
+  const [nombre, ruc, direccion, telefono] = await Promise.all([
+    leer('negocio_nombre'),
+    leer('ruc'),
+    leer('negocio_direccion'),
+    leer('negocio_telefono'),
+  ]);
+
+  return {
+    nombre: nombre || NEGOCIO.nombre,
+    ruc: ruc || NEGOCIO.ruc,
+    direccion: direccion || NEGOCIO.direccion,
+    telefono: telefono || NEGOCIO.telefono,
+  };
+}
 
 function nombreUsuarioSync(usuarioId) {
   if (!usuarioId) {
@@ -66,9 +104,14 @@ async function cuentaDetalle(id) {
     const rondas = store.state.pedidos
       .filter((pedido) => pedido.cuenta_id === cuenta.id && pedido.estado !== 'cancelado')
       .sort((a, b) => a.id - b.id);
-    const subtotal = store.round2(rondas.reduce((sum, pedido) => sum + pedido.subtotal, 0));
-    const igv = store.round2(rondas.reduce((sum, pedido) => sum + pedido.igv, 0));
-    const total = store.round2(rondas.reduce((sum, pedido) => sum + pedido.total, 0));
+    // IGV sobre el total de la cuenta (no por ronda). Para cuentas ya cerradas
+    // se conserva el total cobrado y se deriva el IGV efectivo.
+    const totales = await cuentaTotales.totalesCuenta(cuenta.id, rondas);
+    const subtotal = totales.subtotal;
+    const total = cuenta.estado === 'abierta' ? totales.total : store.round2(cuenta.total);
+    const igv = cuenta.estado === 'abierta'
+      ? totales.igv
+      : store.round2(Math.max(0, total - subtotal));
     const pagos = store.state.pagos.filter((pago) => pago.cuenta_id === cuenta.id);
     const cliente = cuenta.cliente_id ? store.find('clientes', cuenta.cliente_id) : null;
 
@@ -80,7 +123,7 @@ async function cuentaDetalle(id) {
       subtotal,
       igv,
       total_consolidado: total,
-      total: cuenta.estado === 'abierta' ? total : cuenta.total,
+      total,
       rondas: rondas.length,
       pedidos: rondas.map((pedido) => pedidosLib.pedidoConDetalles(pedido)),
       pagos,
@@ -89,7 +132,7 @@ async function cuentaDetalle(id) {
             tipo: cuenta.comprobante_tipo,
             numero: cuenta.comprobante_numero,
             fecha: cuenta.fecha_cierre,
-            total: cuenta.total,
+            total,
           }
         : null,
     };
@@ -109,11 +152,12 @@ async function cuentaDetalle(id) {
     cuenta.cliente_id ? repository.getById('clientes', cuenta.cliente_id) : null,
   ]);
 
-  const subtotal = store.round2(
-    rondas.reduce((sum, pedido) => sum + Number(pedido.subtotal), 0),
-  );
-  const igv = store.round2(rondas.reduce((sum, pedido) => sum + Number(pedido.igv), 0));
-  const total = store.round2(rondas.reduce((sum, pedido) => sum + Number(pedido.total), 0));
+  const totales = await cuentaTotales.totalesCuenta(cuenta.id, rondas);
+  const subtotal = totales.subtotal;
+  const total = cuenta.estado === 'abierta' ? totales.total : store.round2(Number(cuenta.total));
+  const igv = cuenta.estado === 'abierta'
+    ? totales.igv
+    : store.round2(Math.max(0, total - subtotal));
   const pagos = pagosResult.data.map((pago) => ({ ...pago, monto: Number(pago.monto) }));
   const pedidos = await Promise.all(
     rondas.map((pedido) => pedidosDb.pedidoConDetalles(pedido)),
@@ -121,14 +165,13 @@ async function cuentaDetalle(id) {
 
   return {
     ...cuenta,
-    total: Number(cuenta.total),
+    total,
     usuario_apertura_nombre: usuarioApertura ? usuarioApertura.nombre : null,
     mesa_numero: mesa ? mesa.numero : null,
     cliente: clienteResumen(cliente),
     subtotal,
     igv,
     total_consolidado: total,
-    total: cuenta.estado === 'abierta' ? total : Number(cuenta.total),
     rondas: rondas.length,
     pedidos,
     pagos,
@@ -137,7 +180,7 @@ async function cuentaDetalle(id) {
           tipo: cuenta.comprobante_tipo,
           numero: cuenta.comprobante_numero,
           fecha: cuenta.fecha_cierre,
-          total: Number(cuenta.total),
+          total,
         }
       : null,
   };
@@ -196,7 +239,12 @@ async function cobrarCuenta(id, body, usuario) {
       throw new AppError(422, 'BUSINESS_RULE_VIOLATION', 'La cuenta no tiene pedidos para cobrar.');
     }
 
-    const total = store.round2(rondas.reduce((sum, pedido) => sum + pedido.total, 0));
+    // Regla de negocio: solo se cobra cuando TODOS los platos fueron
+    // entregados. Cada línea trae su propio `entregado_en` (KDS v2).
+    await cuentaTotales.validarTodoEntregado(cuenta.id, rondas);
+
+    // IGV sobre el total de la cuenta (no por ronda).
+    const total = (await cuentaTotales.totalesCuenta(cuenta.id, rondas)).total;
     const montoEntregado = payload.monto === undefined || payload.monto === null
       ? total
       : optionalNumber(payload.monto, 'monto', { min: 0 });
@@ -276,7 +324,11 @@ async function cobrarCuenta(id, body, usuario) {
     throw new AppError(422, 'BUSINESS_RULE_VIOLATION', 'La cuenta no tiene pedidos para cobrar.');
   }
 
-  const total = store.round2(rondas.reduce((sum, pedido) => sum + Number(pedido.total), 0));
+  // Mismo candado que la rama en memoria: nada se cobra sin entregar.
+  await cuentaTotales.validarTodoEntregado(cuenta.id, rondas);
+
+  // IGV sobre el total de la cuenta (no por ronda).
+  const total = (await cuentaTotales.totalesCuenta(cuenta.id, rondas)).total;
   const montoEntregado = payload.monto === undefined || payload.monto === null
     ? total
     : optionalNumber(payload.monto, 'monto', { min: 0 });
@@ -388,6 +440,7 @@ async function comprobanteCuenta(id) {
       cantidad: linea.cantidad,
       precio_unitario: linea.precio_unitario,
       subtotal: linea.subtotal,
+      notas: linea.notas ?? null,
     })),
   );
 
@@ -400,12 +453,20 @@ async function comprobanteCuenta(id) {
     : null;
   const esRuc = cliente && cliente.tipo_documento === 'RUC';
 
+  // Método de pago efectivamente usado: el del pago de la cuenta o, si la
+  // cuenta es antigua, el que quedó grabado en sus pedidos.
+  const pago = detalle.pagos.length > 0 ? detalle.pagos[detalle.pagos.length - 1] : null;
+  const metodo = pago
+    ? pago.metodo
+    : (detalle.pedidos.find((pedido) => pedido.metodo_pago) || {}).metodo_pago || null;
+
   return {
     tipo: cuenta.comprobante_tipo,
     numero: cuenta.comprobante_numero,
     fecha: cuenta.fecha_cierre,
     cuenta_id: cuenta.id,
     mesa_numero: detalle.mesa_numero,
+    mozo: detalle.usuario_apertura_nombre || null,
     cliente: cliente ? cliente.nombre : 'Cliente varios',
     ruc: esRuc ? cliente.numero_documento : null,
     documento: cliente ? cliente.numero_documento : null,
@@ -413,8 +474,10 @@ async function comprobanteCuenta(id) {
     moneda: 'PEN',
     subtotal: detalle.subtotal,
     igv: detalle.igv,
-    total: Number(cuenta.total),
+    total: Number(detalle.total),
+    metodo,
     items,
+    negocio: await datosNegocio(),
     sunat: sunat.estadoDeCuenta(cuenta),
   };
 }
@@ -423,6 +486,18 @@ async function cargarCuenta(id) {
   return db.isSupabase()
     ? db.findOrThrow('cuentas', parseId(id), 'Cuenta')
     : store.findOrThrow('cuentas', parseId(id), 'Cuenta');
+}
+
+// Boleta/ticket en PDF de 80 mm (simula la salida de la etiquetadora). Solo
+// existe para cuentas cobradas: el comprobante se emite al cerrar la cuenta.
+async function boletaPdf(id) {
+  const comprobante = await comprobanteCuenta(id);
+  const pdf = await generarBoletaPdf(comprobante);
+  return {
+    pdf,
+    numero: comprobante.numero,
+    tipo: comprobante.tipo,
+  };
 }
 
 async function persistirEstadoSunat(cuenta, resultado) {
@@ -562,6 +637,7 @@ module.exports = {
   listPagos,
   cobrarCuenta,
   comprobanteCuenta,
+  boletaPdf,
   enviarComprobante,
   cancelarCuenta,
 };

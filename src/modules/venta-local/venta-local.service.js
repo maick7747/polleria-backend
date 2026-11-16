@@ -20,6 +20,7 @@ const {
 } = require('../../middleware/validate');
 const pedidos = require('../../lib/pedidos');
 const pedidosDb = require('../../lib/pedidos-db');
+const cuentaTotales = require('../../lib/cuenta-totales');
 const documentoProviders = require('./providers/documento');
 
 function fechaLima(iso) {
@@ -661,11 +662,13 @@ async function addRonda(cuentaId, body, usuario) {
     cuenta.total = store.round2(cuenta.total + pedido.total);
 
     if (!enviarCocina) {
+      await cuentaTotales.recalcularTotalCuenta(cuenta.id);
       return pedidos.pedidoConDetalles(pedido);
     }
 
     try {
       const envio = pedidos.enviarPedidoACocina(pedido, usuario.id);
+      await cuentaTotales.recalcularTotalCuenta(cuenta.id);
       return {
         ...pedidos.pedidoConDetalles(envio.pedido),
         movimientos_inventario: envio.movimientos.length,
@@ -680,8 +683,9 @@ async function addRonda(cuentaId, body, usuario) {
     }
   }
 
+  let rondaRpc;
   try {
-    return await pedidosDb.crearRondaYEnviarRpc({
+    rondaRpc = await pedidosDb.crearRondaYEnviarRpc({
       cuentaId: id,
       usuarioId: usuario.id,
       items: payload.items,
@@ -697,6 +701,13 @@ async function addRonda(cuentaId, body, usuario) {
       }
       throw db.persistenceError('No se pudo registrar la ronda.', error);
     }
+  }
+
+  // La RPC suma el total de la ronda; aquí se reemplaza por el total de la
+  // cuenta con IGV aplicado una sola vez (regla 2026-11-14).
+  if (rondaRpc) {
+    await cuentaTotales.recalcularTotalCuenta(id);
+    return rondaRpc;
   }
 
   const cuenta = await db.findOrThrow('cuentas', id, 'Cuenta');
@@ -745,6 +756,7 @@ async function addRonda(cuentaId, body, usuario) {
     pedido.total,
     `La ronda ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
   );
+  await cuentaTotales.recalcularTotalCuenta(cuenta.id);
 
   if (!enviarCocina) {
     return pedidosDb.pedidoConDetalles(pedido, { detalles: pedido.detalles });
@@ -869,6 +881,7 @@ async function createPedido(body, usuario) {
     if (pedido.cuenta_id) {
       const cuenta = store.findOrThrow('cuentas', pedido.cuenta_id, 'Cuenta');
       cuenta.total = store.round2(cuenta.total + pedido.total);
+      await cuentaTotales.recalcularTotalCuenta(cuenta.id);
     }
 
     return pedidos.pedidoConDetalles(pedido);
@@ -913,6 +926,7 @@ async function createPedido(body, usuario) {
       pedido.total,
       `El pedido ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
     );
+    await cuentaTotales.recalcularTotalCuenta(cuenta.id);
   }
 
   return pedidosDb.pedidoConDetalles(pedido, { detalles: pedido.detalles });
@@ -971,6 +985,7 @@ async function updatePedido(id, body) {
       const cuenta = store.find('cuentas', pedido.cuenta_id);
       if (cuenta && cuenta.estado === 'abierta') {
         cuenta.total = store.round2(Math.max(0, cuenta.total - totalAnterior + pedido.total));
+        await cuentaTotales.recalcularTotalCuenta(cuenta.id);
       }
     }
 
@@ -1045,6 +1060,7 @@ async function updatePedido(id, body) {
           Math.max(0, Number(cuenta.total) - totalAnterior + Number(actualizado.total)),
         ),
       });
+      await cuentaTotales.recalcularTotalCuenta(cuenta.id);
     }
   }
 
@@ -1092,6 +1108,7 @@ async function cancelarPedido(id, body, usuario) {
       const cuenta = store.find('cuentas', pedido.cuenta_id);
       if (cuenta && cuenta.estado === 'abierta') {
         cuenta.total = store.round2(Math.max(0, cuenta.total - pedido.total));
+        await cuentaTotales.recalcularTotalCuenta(cuenta.id);
       }
     }
 
@@ -1138,6 +1155,7 @@ async function cancelarPedido(id, body, usuario) {
         -Number(pedido.total),
         `El pedido ${pedido.numero} se canceló pero no se pudo actualizar el total de la cuenta.`,
       );
+      await cuentaTotales.recalcularTotalCuenta(cuenta.id);
     }
   }
 

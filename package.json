@@ -13,6 +13,7 @@
     "verify:moneda": "node scripts/verify-moneda.js",
     "verify:integraciones": "node scripts/verify-integraciones.js",
     "e2e:ronda": "node scripts/e2e-ronda.js",
+    "e2e:cobro": "node scripts/e2e-cobro-entrega.js",
     "p95:prod": "node scripts/p95-produccion.js",
     "db:apply": "node scripts/db-apply.js"
   },

@@ -129,11 +129,11 @@ function check(name, ok, detail) {
 
     const ronda = await request(base, 'POST', '/cuentas/1/pedidos', {
       token: cashier,
-      body: { items: [{ platillo_id: 4, cantidad: 1 }] },
+      body: { items: [{ platillo_id: 4, cantidad: 1 }], enviar_cocina: true },
     });
     check(
       'agregar ronda a cuenta abierta',
-      ronda.status === 201 && ronda.body.estado === 'borrador',
+      ronda.status === 201 && ronda.body.estado === 'en_cocina',
       `HTTP ${ronda.status}, estado=${ronda.body.estado}`,
     );
     const pagosTrasRonda = await request(base, 'GET', '/cuentas/1/pagos', { token: owner });
@@ -145,15 +145,60 @@ function check(name, ok, detail) {
 
     const detalle = await request(base, 'GET', '/cuentas/1', { token: owner });
     const totalCuenta = detalle.body.total_consolidado;
+
+    // Regla 2026-11-14: no se cobra con platos sin entregar. La cuenta tiene
+    // rondas del seed + la recién creada, todas pendientes de entrega.
+    const cobroBloqueado = await request(base, 'POST', '/cuentas/1/cobrar', {
+      token: cashier,
+      body: { metodo: 'efectivo', monto: totalCuenta },
+    });
+    check(
+      'cobro bloqueado con platos sin entregar (409 PLATOS_NO_ENTREGADOS)',
+      cobroBloqueado.status === 409 &&
+        cobroBloqueado.body.error &&
+        cobroBloqueado.body.error.code === 'PLATOS_NO_ENTREGADOS',
+      `HTTP ${cobroBloqueado.status}, code=${cobroBloqueado.body.error && cobroBloqueado.body.error.code}`,
+    );
+
+    // El mozo entrega todas las líneas (atajo "todo listo" + entrega de ronda).
+    for (const pedido of detalle.body.pedidos || []) {
+      const incompleto = (pedido.detalles || []).some(
+        (linea) => linea.estado_preparacion !== 'listo',
+      );
+      if (incompleto) {
+        await request(base, 'PATCH', `/kds/pedidos/${pedido.id}/listo`, {
+          token: owner,
+          body: {},
+        });
+      }
+      await request(base, 'PATCH', `/kds/pedidos/${pedido.id}/entregar`, {
+        token: owner,
+        body: {},
+      });
+    }
+
     const cobro = await request(base, 'POST', '/cuentas/1/cobrar', {
       token: cashier,
       body: { metodo: 'efectivo', monto: totalCuenta },
     });
     check(
-      'cobrar cuenta abierta',
+      'cobrar cuenta abierta (todo entregado)',
       cobro.ok && cobro.body.comprobante && cobro.body.pago,
-      `HTTP ${cobro.status}, total=${totalCuenta}`,
+      `HTTP ${cobro.status}, total=${cobro.body.comprobante && cobro.body.comprobante.total}`,
     );
+
+    const boleta = await fetch(`${base}/cuentas/1/comprobante/pdf`, {
+      headers: { Authorization: `Bearer ${cashier}` },
+    });
+    const boletaBuffer = Buffer.from(await boleta.arrayBuffer());
+    check(
+      'boleta PDF 80 mm',
+      boleta.ok &&
+        String(boleta.headers.get('content-type') || '').includes('application/pdf') &&
+        boletaBuffer.subarray(0, 4).toString() === '%PDF',
+      `HTTP ${boleta.status}, ${boletaBuffer.length} bytes`,
+    );
+
     const doble = await request(base, 'POST', '/cuentas/1/cobrar', {
       token: cashier,
       body: { metodo: 'efectivo', monto: totalCuenta },
