@@ -91,7 +91,13 @@ async function recalcularTotalCuenta(cuentaId, pedidosPrevios = null) {
 
   const cuenta = await repository.getById('cuentas', Number(cuentaId));
   if (cuenta && cuenta.estado === 'abierta') {
-    await repository.update('cuentas', cuenta.id, { total: totales.total });
+    // UPDATE condicional: si otra terminal cobra entre la lectura y esta
+    // escritura, no se pisa el total de una cuenta ya cerrada.
+    await repository.updateWhere(
+      'cuentas',
+      { id: cuenta.id, estado: 'abierta' },
+      { total: totales.total },
+    );
   }
   return totales;
 }
