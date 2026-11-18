@@ -51,6 +51,12 @@ router.get('/pedidos', permisoVenta, async (req, res) => {
   responderConEtag(req, res, await service.listPedidos(req.query));
 });
 
+// Selector liviano (sin detalles) para pantallas que solo buscan un pedido.
+// Debe ir antes de `/pedidos/:id` para que "selector" no se interprete como id.
+router.get('/pedidos/selector', permisoVenta, async (req, res) => {
+  res.json(await service.listPedidosSelector(req.query));
+});
+
 router.get('/pedidos/:id', permisoVenta, async (req, res) => {
   res.json(await service.getPedido(req.params.id));
 });

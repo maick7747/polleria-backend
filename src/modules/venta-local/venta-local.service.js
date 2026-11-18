@@ -783,6 +783,160 @@ async function addRonda(cuentaId, body, usuario) {
   }
 }
 
+/**
+ * Selector liviano para pantallas que solo necesitan identificar un pedido
+ * (p. ej. Devoluciones): devuelve cabecera + nombres, **sin detalles**, y
+ * limita a 20 resultados. Evita cargar 100 pedidos con todas sus líneas.
+ */
+function selectorPedidoDTO(fila, mapas = {}) {
+  const clienteId = fila.cliente_id;
+  const mesaId = fila.mesa_id;
+  const usuarioId = fila.usuario_cajero_id;
+  return {
+    id: fila.id,
+    numero: fila.numero,
+    canal: fila.canal,
+    tipo_consumo: fila.tipo_consumo,
+    total: Number(fila.total) || 0,
+    fecha_pedido: fila.fecha_pedido,
+    cliente_nombre: clienteId
+      ? (mapas.clientes?.get(clienteId) ?? null)
+      : null,
+    mesa_numero: mesaId ? (mapas.mesas?.get(mesaId) ?? null) : null,
+    usuario_cajero_nombre: usuarioId
+      ? (mapas.usuarios?.get(usuarioId) ?? null)
+      : null,
+  };
+}
+
+async function listPedidosSelector(query = {}) {
+  const termino = query.q ? String(query.q).trim() : '';
+  const buscado = termino.toLowerCase();
+  const limit = Math.min(Math.max(Number(query.limit) || 10, 1), 20);
+  const desde = optionalDate(query.desde, 'desde') || null;
+  const hasta = optionalDate(query.hasta, 'hasta') || null;
+
+  if (!db.isSupabase()) {
+    const filas = store.state.pedidos
+      .filter((pedido) => pedido.estado !== 'cancelado')
+      .filter((pedido) => !desde || String(pedido.fecha_pedido).slice(0, 10) >= desde)
+      .filter((pedido) => !hasta || String(pedido.fecha_pedido).slice(0, 10) <= hasta)
+      .filter((pedido) => {
+        if (!buscado) {
+          return true;
+        }
+        const cliente = pedido.cliente_id
+          ? store.find('clientes', pedido.cliente_id)
+          : null;
+        return (
+          String(pedido.numero || '').toLowerCase().includes(buscado) ||
+          String(cliente?.nombre || '').toLowerCase().includes(buscado)
+        );
+      })
+      .sort((izq, der) => der.id - izq.id)
+      .slice(0, limit);
+
+    return {
+      data: filas.map((pedido) => {
+        const cliente = pedido.cliente_id
+          ? store.find('clientes', pedido.cliente_id)
+          : null;
+        const mesa = pedido.mesa_id ? store.find('mesas', pedido.mesa_id) : null;
+        const usuario = pedido.usuario_cajero_id
+          ? store.find('usuarios', pedido.usuario_cajero_id)
+          : null;
+        return selectorPedidoDTO(pedido, {
+          clientes: new Map(cliente ? [[cliente.id, cliente.nombre]] : []),
+          mesas: new Map(mesa ? [[mesa.id, mesa.numero]] : []),
+          usuarios: new Map(usuario ? [[usuario.id, usuario.nombre]] : []),
+        });
+      }),
+      meta: { limit, total: filas.length },
+    };
+  }
+
+  let consulta = repository
+    .table('pedidos')
+    .select(
+      'id,numero,canal,tipo_consumo,total,fecha_pedido,cliente_id,mesa_id,usuario_cajero_id',
+      { count: 'exact' },
+    )
+    .neq('estado', 'cancelado');
+
+  if (desde) {
+    consulta = consulta.gte('fecha_pedido', `${desde}T00:00:00-05:00`);
+  }
+  if (hasta) {
+    consulta = consulta.lte('fecha_pedido', `${hasta}T23:59:59.999-05:00`);
+  }
+
+  if (buscado) {
+    const limpio = termino.replace(/[,()%]/g, ' ').trim();
+    if (limpio) {
+      const { data: clientes } = await repository
+        .table('clientes')
+        .select('id')
+        .ilike('nombre', `%${limpio}%`)
+        .limit(20);
+      const ids = (clientes || []).map((cliente) => cliente.id);
+      const condiciones = [`numero.ilike.%${limpio}%`];
+      if (ids.length > 0) {
+        condiciones.push(`cliente_id.in.(${ids.join(',')})`);
+      }
+      consulta = consulta.or(condiciones.join(','));
+    }
+  }
+
+  consulta = consulta.order('id', { ascending: false }).limit(limit);
+  const { data, error, count } = await consulta;
+  if (error) {
+    throw db.persistenceError('No se pudieron buscar los pedidos.', error);
+  }
+
+  const filas = data || [];
+  const clienteIds = [...new Set(filas.map((fila) => fila.cliente_id).filter(Boolean))];
+  const mesaIds = [...new Set(filas.map((fila) => fila.mesa_id).filter(Boolean))];
+  const usuarioIds = [...new Set(filas.map((fila) => fila.usuario_cajero_id).filter(Boolean))];
+
+  const [clientes, mesas, usuarios] = await Promise.all([
+    clienteIds.length
+      ? repository.list('clientes', {
+        select: 'id,nombre',
+        filters: { id: clienteIds },
+        limit: 100,
+      })
+      : { data: [] },
+    mesaIds.length
+      ? repository.list('mesas', {
+        select: 'id,numero',
+        filters: { id: mesaIds },
+        limit: 100,
+      })
+      : { data: [] },
+    usuarioIds.length
+      ? repository.list('usuarios', {
+        select: 'id,nombre',
+        filters: { id: usuarioIds },
+        limit: 100,
+      })
+      : { data: [] },
+  ]);
+
+  const mapas = {
+    clientes: new Map((clientes.data || []).map((cliente) => [cliente.id, cliente.nombre])),
+    mesas: new Map((mesas.data || []).map((mesa) => [mesa.id, mesa.numero])),
+    usuarios: new Map((usuarios.data || []).map((usuario) => [usuario.id, usuario.nombre])),
+  };
+
+  return {
+    data: filas.map((fila) => selectorPedidoDTO(fila, mapas)),
+    meta: {
+      limit,
+      total: typeof count === 'number' ? count : filas.length,
+    },
+  };
+}
+
 async function listPedidos(query = {}) {
   const estado = query.estado
     ? requiredEnum(query.estado, 'estado', ['borrador', 'en_cocina', 'servido', 'cobrado', 'cancelado'])
@@ -1334,6 +1488,7 @@ module.exports = {
   attachCliente,
   addRonda,
   listPedidos,
+  listPedidosSelector,
   getPedido,
   createPedido,
   updatePedido,
