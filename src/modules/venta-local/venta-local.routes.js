@@ -8,6 +8,7 @@ const tablero = require('./tablero.service');
 
 const router = express.Router();
 const permisoVenta = requirePermiso('venta.registrar');
+const permisoCaja = requirePermiso('caja.cobrar');
 const permisoTablero = requirePermiso('venta.registrar', 'caja.cobrar', 'cocina.kds');
 
 // GET /api/venta-local/tablero -> { generado_en, meta:{resumen}, mesas[], cuentas[] }
@@ -44,7 +45,8 @@ router.patch('/cuentas/:id/cliente', permisoVenta, async (req, res) => {
   res.json(await service.attachCliente(req.params.id, req.body));
 });
 
-// GET /api/pedidos?estado=&canal=&desde=&hasta=&page=&limit=&after=<id>
+// GET /api/pedidos?estado=&canal=&tipo_consumo=&desde=&hasta=&page=&limit=&after=<id>
+// `tipo_consumo` acepta sala | para_llevar | delivery.
 // `after` (entero >= 1) devuelve solo pedidos con id mayor al cursor.
 // Incluye meta.next_cursor y meta.has_more. Respuesta con ETag.
 router.get('/pedidos', permisoVenta, async (req, res) => {
@@ -75,6 +77,11 @@ router.post('/pedidos/:id/enviar-cocina', permisoVenta, async (req, res) => {
 
 router.post('/pedidos/:id/cancelar', permisoVenta, async (req, res) => {
   res.json(await service.cancelarPedido(req.params.id, req.body, req.usuario));
+});
+
+// Cobro en mostrador de un pedido para llevar (sin cuenta de mesa).
+router.post('/pedidos/:id/cobrar', permisoCaja, async (req, res) => {
+  res.json(await service.cobrarPedido(req.params.id, req.body, req.usuario));
 });
 
 // GET /api/clientes?q=&documento=&page=&limit=&after=<id>

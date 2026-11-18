@@ -23,6 +23,9 @@ const pedidosDb = require('../../lib/pedidos-db');
 const cuentaTotales = require('../../lib/cuenta-totales');
 const documentoProviders = require('./providers/documento');
 
+// Métodos admitidos al cobrar un pedido para llevar en mostrador.
+const METODOS_COBRO_PEDIDO = ['efectivo', 'yape', 'plin', 'tarjeta'];
+
 function fechaLima(iso) {
   if (!iso) {
     return null;
@@ -944,6 +947,9 @@ async function listPedidos(query = {}) {
   const canal = query.canal
     ? requiredEnum(query.canal, 'canal', pedidos.CANALES)
     : null;
+  const tipoConsumo = query.tipo_consumo
+    ? requiredEnum(query.tipo_consumo, 'tipo_consumo', pedidos.TIPOS_CONSUMO)
+    : null;
   const desde = optionalDate(query.desde, 'desde');
   const hasta = optionalDate(query.hasta, 'hasta');
   const after = optionalAfter(query);
@@ -952,6 +958,7 @@ async function listPedidos(query = {}) {
     const data = store.state.pedidos
       .filter((pedido) => !estado || pedido.estado === estado)
       .filter((pedido) => !canal || pedido.canal === canal)
+      .filter((pedido) => !tipoConsumo || pedido.tipo_consumo === tipoConsumo)
       .filter((pedido) => !desde || pedido.fecha_pedido.slice(0, 10) >= desde)
       .filter((pedido) => !hasta || pedido.fecha_pedido.slice(0, 10) <= hasta)
       .filter((pedido) => !after || Number(pedido.id) > after)
@@ -967,6 +974,9 @@ async function listPedidos(query = {}) {
   }
   if (canal) {
     filters.canal = canal;
+  }
+  if (tipoConsumo) {
+    filters.tipo_consumo = tipoConsumo;
   }
   if (desde || hasta) {
     filters.fecha_pedido = {
@@ -1002,6 +1012,20 @@ async function getPedido(id) {
 
 async function createPedido(body, usuario) {
   const payload = requiredObject(body);
+  const debeEnviarCocina = parseEnviarCocina(payload.enviar_cocina);
+
+  // Para llevar: el nombre libre del cliente se guarda en `clientes` para que
+  // la cola de mostrador lo muestre (el pedido solo guarda `cliente_id`).
+  let clienteId = payload.cliente_id;
+  if (
+    !clienteId &&
+    payload.cliente_nombre !== undefined &&
+    payload.cliente_nombre !== null
+  ) {
+    const nombre = requiredString(payload.cliente_nombre, 'cliente_nombre', { max: 120 });
+    const cliente = await createCliente({ nombre });
+    clienteId = cliente.id;
+  }
 
   if (!db.isSupabase()) {
     store.requireCajaAbierta();
@@ -1023,7 +1047,7 @@ async function createPedido(body, usuario) {
       items: payload.items,
       mesa_id: payload.mesa_id,
       cuenta_id: payload.cuenta_id,
-      cliente_id: payload.cliente_id,
+      cliente_id: clienteId,
       repartidor_id: payload.repartidor_id,
       usuario_id: usuario.id,
       observaciones: payload.observaciones,
@@ -1036,6 +1060,13 @@ async function createPedido(body, usuario) {
       const cuenta = store.findOrThrow('cuentas', pedido.cuenta_id, 'Cuenta');
       cuenta.total = store.round2(cuenta.total + pedido.total);
       await cuentaTotales.recalcularTotalCuenta(cuenta.id);
+    }
+
+    // Para llevar / mostrador: se crea y se manda a cocina en una sola llamada.
+    // Si el envío falla, el pedido queda en borrador (no se borra) y el error
+    // se propaga tal cual.
+    if (debeEnviarCocina) {
+      return enviarCocina(pedido.id, usuario);
     }
 
     return pedidos.pedidoConDetalles(pedido);
@@ -1064,7 +1095,7 @@ async function createPedido(body, usuario) {
     items: payload.items,
     mesa_id: payload.mesa_id,
     cuenta_id: payload.cuenta_id,
-    cliente_id: payload.cliente_id,
+    cliente_id: clienteId,
     repartidor_id: payload.repartidor_id,
     usuario_id: usuario.id,
     observaciones: payload.observaciones,
@@ -1081,6 +1112,11 @@ async function createPedido(body, usuario) {
       `El pedido ${pedido.numero} se registró pero no se pudo actualizar el total de la cuenta.`,
     );
     await cuentaTotales.recalcularTotalCuenta(cuenta.id);
+  }
+
+  // Mismo comportamiento que la rama en memoria: crear + enviar a cocina.
+  if (debeEnviarCocina) {
+    return enviarCocina(pedido.id, usuario);
   }
 
   return pedidosDb.pedidoConDetalles(pedido, { detalles: pedido.detalles });
@@ -1237,6 +1273,161 @@ async function enviarCocina(id, usuario) {
   return {
     ...detalle,
     movimientos_inventario: result.movimientos.length,
+  };
+}
+
+// Cobro en mostrador de un pedido para llevar (sin cuenta de mesa). Inserta el
+// pago con `pedido_id`, marca el pedido como cobrado/pagado y emite un ticket
+// de la serie T001-. No toca cuentas ni mesas.
+async function cobrarPedido(id, body, usuario) {
+  const payload = requiredObject(body || {});
+
+  if (!db.isSupabase()) {
+    const pedido = store.findOrThrow('pedidos', parseId(id), 'Pedido');
+
+    if (pedido.tipo_consumo !== 'para_llevar' || pedido.cuenta_id) {
+      throw new AppError(
+        422,
+        'BUSINESS_RULE_VIOLATION',
+        'Solo se puede cobrar en mostrador un pedido para llevar sin cuenta.',
+      );
+    }
+    if (pedido.estado === 'cobrado' || pedido.estado_pago === 'pagado') {
+      throw new AppError(409, 'PEDIDO_YA_COBRADO', 'El pedido ya fue cobrado.');
+    }
+    if (pedido.estado === 'cancelado') {
+      throw new AppError(409, 'CONFLICT', 'Un pedido cancelado no puede cobrarse.');
+    }
+
+    store.requireCajaAbierta();
+
+    const metodo = requiredEnum(payload.metodo, 'metodo', METODOS_COBRO_PEDIDO);
+    const total = Number(pedido.total);
+    const montoEntregado = payload.monto === undefined || payload.monto === null
+      ? total
+      : (optionalNumber(payload.monto, 'monto', { min: 0 }) ?? total);
+
+    if (montoEntregado + 0.009 < total) {
+      throw new AppError(
+        422,
+        'BUSINESS_RULE_VIOLATION',
+        'El monto recibido es menor al total del pedido.',
+        [{ total, monto: montoEntregado }],
+      );
+    }
+
+    const ahora = store.nowIso();
+    const numero = pedido.comprobante_numero || store.generarTicketNumero();
+
+    pedido.estado = 'cobrado';
+    pedido.estado_pago = 'pagado';
+    pedido.metodo_pago = metodo;
+    pedido.comprobante_numero = numero;
+    pedido.fecha_entrega = pedido.fecha_entrega || ahora;
+    pedido.estado_entrega = 'entregado';
+
+    const pago = store.addPago({
+      pedido_id: pedido.id,
+      cuenta_id: null,
+      metodo,
+      monto: total,
+      es_contraentrega: false,
+      usuario_id: usuario.id,
+      fecha: ahora,
+    });
+
+    return {
+      pedido: pedidos.pedidoConDetalles(pedido),
+      pago,
+      comprobante: { tipo: 'ticket', numero, total, fecha: ahora },
+      vuelto: store.round2(Math.max(0, montoEntregado - total)),
+    };
+  }
+
+  const pedido = await db.findOrThrow('pedidos', parseId(id), 'Pedido');
+
+  if (pedido.tipo_consumo !== 'para_llevar' || pedido.cuenta_id) {
+    throw new AppError(
+      422,
+      'BUSINESS_RULE_VIOLATION',
+      'Solo se puede cobrar en mostrador un pedido para llevar sin cuenta.',
+    );
+  }
+  if (pedido.estado === 'cobrado' || pedido.estado_pago === 'pagado') {
+    throw new AppError(409, 'PEDIDO_YA_COBRADO', 'El pedido ya fue cobrado.');
+  }
+  if (pedido.estado === 'cancelado') {
+    throw new AppError(409, 'CONFLICT', 'Un pedido cancelado no puede cobrarse.');
+  }
+
+  await db.requireCajaAbierta();
+
+  const metodo = requiredEnum(payload.metodo, 'metodo', METODOS_COBRO_PEDIDO);
+  const total = Number(pedido.total);
+  const montoEntregado = payload.monto === undefined || payload.monto === null
+    ? total
+    : (optionalNumber(payload.monto, 'monto', { min: 0 }) ?? total);
+
+  if (montoEntregado + 0.009 < total) {
+    throw new AppError(
+      422,
+      'BUSINESS_RULE_VIOLATION',
+      'El monto recibido es menor al total del pedido.',
+      [{ total, monto: montoEntregado }],
+    );
+  }
+
+  const ahora = db.nowIso();
+  const numero = pedido.comprobante_numero || await db.nextTicketNumero();
+
+  let pago;
+  try {
+    pago = await repository.insert('pagos', {
+      pedido_id: pedido.id,
+      cuenta_id: null,
+      metodo,
+      monto: total,
+      es_contraentrega: false,
+      usuario_id: usuario.id,
+      fecha: ahora,
+    });
+  } catch (error) {
+    throw db.persistenceError('No se pudo registrar el pago del pedido.', error);
+  }
+
+  // UPDATE condicional: si otra terminal ya lo cobró (o lo canceló) entre la
+  // lectura y la escritura, no se actualiza nada y se revierte el pago.
+  const actualizados = await repository.updateWhere(
+    'pedidos',
+    {
+      id: pedido.id,
+      estado_pago: 'pendiente',
+      estado: ['borrador', 'en_cocina', 'servido'],
+    },
+    {
+      estado: 'cobrado',
+      estado_pago: 'pagado',
+      metodo_pago: metodo,
+      comprobante_numero: numero,
+      fecha_entrega: pedido.fecha_entrega || ahora,
+      estado_entrega: 'entregado',
+    },
+  );
+
+  if (!actualizados || actualizados.length === 0) {
+    try {
+      await repository.remove('pagos', pago.id);
+    } catch (error) {
+      // Compensación best-effort: el pago huérfano no debe tapar el 409.
+    }
+    throw new AppError(409, 'PEDIDO_YA_COBRADO', 'El pedido ya fue cobrado o cancelado.');
+  }
+
+  return {
+    pedido: await pedidosDb.pedidoConDetalles(actualizados[0]),
+    pago: { ...pago, monto: Number(pago.monto) },
+    comprobante: { tipo: 'ticket', numero, total, fecha: ahora },
+    vuelto: store.round2(Math.max(0, montoEntregado - total)),
   };
 }
 
@@ -1493,6 +1684,7 @@ module.exports = {
   createPedido,
   updatePedido,
   enviarCocina,
+  cobrarPedido,
   cancelarPedido,
   listClientes,
   createCliente,

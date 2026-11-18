@@ -180,6 +180,27 @@ async function nextComprobanteNumero() {
   return `${prefix}${String(next).padStart(8, '0')}`;
 }
 
+// Correlativo de ticket de pedido (T001-): serie independiente de las boletas
+// B001- de cuenta, porque el pedido para llevar no tiene cuenta de mesa.
+async function nextTicketNumero() {
+  if (!isSupabase()) {
+    return store.generarTicketNumero();
+  }
+  const prefix = 'T001-';
+  const { data, error } = await repository
+    .table('pedidos')
+    .select('comprobante_numero')
+    .like('comprobante_numero', `${prefix}%`)
+    .order('comprobante_numero', { ascending: false })
+    .limit(1);
+  if (error) {
+    throw persistenceError('No se pudo calcular el correlativo del ticket.', error);
+  }
+  const last = data && data[0] ? Number(String(data[0].comprobante_numero).slice(prefix.length)) : 0;
+  const next = Number.isFinite(last) ? last + 1 : 1;
+  return `${prefix}${String(next).padStart(8, '0')}`;
+}
+
 async function applyMovement({
   insumo_id,
   tipo,
@@ -332,6 +353,7 @@ module.exports = {
   requireCajaAbierta,
   nextPedidoNumero,
   nextComprobanteNumero,
+  nextTicketNumero,
   applyMovement,
   applyMovements,
   round2: store.round2,

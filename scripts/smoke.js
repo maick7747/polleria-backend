@@ -955,6 +955,109 @@ function resumen(value) {
       throw new Error('Un pedido solo de bebidas no quedó servido ni apareció en la bandeja.');
     }
 
+    // ---- Para llevar: crear + enviar a cocina + cobrar en mostrador ----
+    const paraLlevar = await request(base, 'POST', '/pedidos', {
+      token,
+      body: {
+        canal: 'local',
+        tipo_consumo: 'para_llevar',
+        cliente_nombre: 'Cliente Mostrador',
+        enviar_cocina: true,
+        items: [{ platillo_id: polloKds.id, cantidad: 1 }],
+      },
+    });
+    const paraLlevarOk =
+      paraLlevar.status === 201 &&
+      paraLlevar.body.tipo_consumo === 'para_llevar' &&
+      paraLlevar.body.estado === 'en_cocina' &&
+      paraLlevar.body.cuenta_id === null &&
+      paraLlevar.body.cliente_nombre === 'Cliente Mostrador';
+    results.push({
+      name: 'POST /api/pedidos (para_llevar + enviar_cocina)',
+      status: paraLlevarOk ? 201 : 500,
+      detail: paraLlevarOk
+        ? `id=${paraLlevar.body.id} · estado=${paraLlevar.body.estado} · total=${paraLlevar.body.total}`
+        : JSON.stringify(paraLlevar.body),
+    });
+    if (!paraLlevarOk) {
+      throw new Error(
+        `El pedido para llevar no quedó en cocina: ${JSON.stringify(paraLlevar.body)}`,
+      );
+    }
+
+    const listaLlevar = await request(
+      base,
+      'GET',
+      '/pedidos?tipo_consumo=para_llevar&limit=50',
+      { token },
+    );
+    const filasLlevar = Array.isArray(listaLlevar.body && listaLlevar.body.data)
+      ? listaLlevar.body.data
+      : [];
+    const incluyeLlevar = filasLlevar.some((pedido) => pedido.id === paraLlevar.body.id);
+    const soloLlevar = filasLlevar.every((pedido) => pedido.tipo_consumo === 'para_llevar');
+    const filtroLlevarOk = listaLlevar.ok && incluyeLlevar && soloLlevar;
+    results.push({
+      name: 'GET /api/pedidos?tipo_consumo=para_llevar',
+      status: filtroLlevarOk ? 200 : 500,
+      detail: filtroLlevarOk
+        ? `${filasLlevar.length} pedidos · incluye ${paraLlevar.body.id}`
+        : JSON.stringify(listaLlevar.body),
+    });
+    if (!filtroLlevarOk) {
+      throw new Error(
+        `El filtro tipo_consumo no devolvió solo pedidos para llevar: ${JSON.stringify(listaLlevar.body)}`,
+      );
+    }
+
+    const totalLlevar = Number(paraLlevar.body.total);
+    const cobroLlevar = await request(base, 'POST', `/pedidos/${paraLlevar.body.id}/cobrar`, {
+      token,
+      body: { metodo: 'efectivo', monto: totalLlevar },
+    });
+    const cobroLlevarOk =
+      cobroLlevar.status === 200 &&
+      cobroLlevar.body.pedido &&
+      cobroLlevar.body.pedido.estado === 'cobrado' &&
+      cobroLlevar.body.pedido.estado_pago === 'pagado' &&
+      cobroLlevar.body.pago &&
+      cobroLlevar.body.pago.pedido_id === paraLlevar.body.id &&
+      cobroLlevar.body.pago.cuenta_id === null &&
+      String(cobroLlevar.body.comprobante && cobroLlevar.body.comprobante.numero)
+        .startsWith('T001-') &&
+      Number(cobroLlevar.body.vuelto) === 0;
+    results.push({
+      name: 'POST /api/pedidos/:id/cobrar (mostrador)',
+      status: cobroLlevarOk ? 200 : 500,
+      detail: cobroLlevarOk
+        ? `pedido=${paraLlevar.body.id} · ticket=${cobroLlevar.body.comprobante.numero} · total=${cobroLlevar.body.comprobante.total}`
+        : JSON.stringify(cobroLlevar.body),
+    });
+    if (!cobroLlevarOk) {
+      throw new Error(`El cobro del pedido para llevar falló: ${JSON.stringify(cobroLlevar.body)}`);
+    }
+
+    const recobroLlevar = await request(base, 'POST', `/pedidos/${paraLlevar.body.id}/cobrar`, {
+      token,
+      body: { metodo: 'efectivo', monto: totalLlevar },
+    });
+    const recobroLlevarOk =
+      recobroLlevar.status === 409 &&
+      recobroLlevar.body.error &&
+      recobroLlevar.body.error.code === 'PEDIDO_YA_COBRADO';
+    results.push({
+      name: 'POST /api/pedidos/:id/cobrar (409 ya cobrado)',
+      status: recobroLlevarOk ? 409 : 500,
+      detail: recobroLlevarOk
+        ? `code=${recobroLlevar.body.error.code}`
+        : JSON.stringify(recobroLlevar.body),
+    });
+    if (!recobroLlevarOk) {
+      throw new Error(
+        `El doble cobro debía devolver 409 PEDIDO_YA_COBRADO: ${JSON.stringify(recobroLlevar.body)}`,
+      );
+    }
+
     const documentoSmoke = '99999999';
     const clientePatch = await request(base, 'PATCH', `/cuentas/${cuentaId}/cliente`, {
       token,

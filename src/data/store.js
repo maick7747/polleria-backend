@@ -197,6 +197,12 @@ function generarComprobanteNumero() {
   return `B001-${String(nextId('comprobante_numero')).padStart(8, '0')}`;
 }
 
+// Correlativo propio de los tickets de pedido (para llevar / delivery), que no
+// pasan por una cuenta de mesa y por tanto no consumen la serie B001-.
+function generarTicketNumero() {
+  return `T001-${String(nextId('ticket_numero')).padStart(8, '0')}`;
+}
+
 function cajaAbierta(fecha = today()) {
   return state.cuadres_caja.find((caja) => caja.fecha === fecha && caja.estado === 'abierta') || null;
 }
@@ -954,6 +960,7 @@ module.exports = {
   calcTotals,
   generarNumeroPedido,
   generarComprobanteNumero,
+  generarTicketNumero,
   cajaAbierta,
   requireCajaAbierta,
   applyMovement,
