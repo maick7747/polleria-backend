@@ -319,20 +319,24 @@ async function aceptarPedido(id, usuario) {
     throw new AppError(409, 'CONFLICT', 'Solo un pedido en borrador puede aceptarse.');
   }
 
+  // La respuesta incluye comisión/neto para que la bandeja no muestre 0 %
+  // entre el accept y la recarga del listado.
+  const tasa = await tasaComision(pedido.canal);
+
   if (db.isSupabase()) {
     const resultado = await pedidosDb.enviarPedidoACocina(pedido, usuario.id);
     const dto = await pedidosDb.pedidoConDetalles(resultado.pedido, {
       detalles: resultado.detalles,
     });
     return {
-      ...dto,
+      ...conComision(dto, tasa),
       movimientos_inventario: resultado.movimientos.length,
     };
   }
 
   const resultado = pedidosLib.enviarPedidoACocina(pedido, usuario.id);
   return {
-    ...pedidosLib.pedidoConDetalles(resultado.pedido),
+    ...conComision(pedidosLib.pedidoConDetalles(resultado.pedido), tasa),
     movimientos_inventario: resultado.movimientos.length,
   };
 }
