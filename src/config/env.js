@@ -53,6 +53,11 @@ const env = {
   corsOrigin: process.env.CORS_ORIGIN || '*',
   logRequests: process.env.LOG_REQUESTS !== '0',
   slowRequestMs: asNumber(process.env.SLOW_REQUEST_MS, 3000),
+  // Rate limiting configurable. Los valores por defecto son los de producción;
+  // solo las pruebas de carga los elevan o desactivan (ver guarda en app.js).
+  rateLimitGlobalMax: asNumber(process.env.RATE_LIMIT_GLOBAL_MAX, 300),
+  rateLimitLoginMax: asNumber(process.env.RATE_LIMIT_LOGIN_MAX, 5),
+  rateLimitDisabled: process.env.RATE_LIMIT_DISABLED === '1',
   // Integraciones — validación de documentos (patrón Strategy).
   documentoProvider: process.env.DOCUMENTO_PROVIDER || 'mock',
   documentoFallback: process.env.DOCUMENTO_FALLBACK || 'mock',

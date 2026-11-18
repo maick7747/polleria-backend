@@ -65,14 +65,14 @@ app.use(express.json({ limit: '1mb' }));
 // ---------------------------------------------------------------------
 const limitGlobal = rateLimit({
   windowMs: 60_000,
-  max: 300,
+  max: env.rateLimitGlobalMax,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const limitLogin = rateLimit({
   windowMs: 60_000,
-  max: 5,
+  max: env.rateLimitLoginMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -83,8 +83,20 @@ const limitLogin = rateLimit({
   },
 });
 
-app.use('/api', limitGlobal);
-app.use('/api/auth/login', limitLogin);
+// RATE_LIMIT_DISABLED solo puede desactivar el limitador fuera de producción.
+// En Render (RENDER=1) o con NODE_ENV=production la guarda lo ignora y el
+// limitador queda activo aunque la variable llegue mal configurada.
+const enProduccion = env.nodeEnv === 'production' || Boolean(process.env.RENDER);
+const rateLimitActivo = !(env.rateLimitDisabled && !enProduccion);
+
+if (rateLimitActivo) {
+  app.use('/api', limitGlobal);
+  app.use('/api/auth/login', limitLogin);
+} else {
+  console.warn(
+    '[app] Rate limit DESACTIVADO por RATE_LIMIT_DISABLED=1 (solo ambiente local de pruebas).',
+  );
+}
 
 app.use((req, res, next) => {
   req.id = req.get('X-Request-Id') || `req_${crypto.randomUUID()}`;
