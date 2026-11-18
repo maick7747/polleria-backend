@@ -34,6 +34,7 @@ const reportesRoutes = require('./modules/reportes/reportes.routes');
 const activosRoutes = require('./modules/activos/activos.routes');
 const configuracionRoutes = require('./modules/configuracion/configuracion.routes');
 const integracionesRoutes = require('./modules/integraciones/integraciones.routes');
+const uploadsRoutes = require('./modules/uploads/uploads.routes');
 
 const app = express();
 
@@ -193,6 +194,7 @@ protectedApi.use('/mantenimientos', activosRoutes.mantenimientosRouter);
 protectedApi.use('/', configuracionRoutes);
 protectedApi.use('/configuracion', configuracionRoutes);
 protectedApi.use('/integraciones', integracionesRoutes);
+protectedApi.use('/uploads', uploadsRoutes);
 
 app.use('/api', protectedApi);
 

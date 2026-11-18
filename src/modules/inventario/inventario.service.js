@@ -52,6 +52,7 @@ function estadoStock(insumo) {
 function insumoResumen(insumo) {
   return {
     ...insumo,
+    imagen_url: insumo.imagen_url === undefined ? null : insumo.imagen_url,
     stock_actual: Number(insumo.stock_actual),
     stock_minimo: Number(insumo.stock_minimo),
     costo_promedio: Number(insumo.costo_promedio),
@@ -592,6 +593,29 @@ async function actualizarMinimo(insumoId, body) {
   return insumoResumen(actualizado || { ...insumo, stock_minimo: nuevoMinimo });
 }
 
+// Imagen del insumo. `imagen_url: null` o "" la quita; el campo debe venir
+// explícito para no borrarla por accidente con un body vacío.
+async function actualizarImagen(insumoId, body) {
+  const payload = requiredObject(body);
+  if (payload.imagen_url === undefined) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'El campo "imagen_url" es obligatorio.', [
+      { field: 'imagen_url', value: null },
+    ]);
+  }
+  const imagenUrl = optionalString(payload.imagen_url, 'imagen_url', { max: 500 });
+
+  if (!db.isSupabase()) {
+    const insumo = store.findOrThrow('insumos', parseId(insumoId, 'insumo_id'), 'Insumo');
+    insumo.imagen_url = imagenUrl;
+    insumo.actualizado_en = store.nowIso();
+    return insumoResumen(insumo);
+  }
+
+  const insumo = await db.findOrThrow('insumos', parseId(insumoId, 'insumo_id'), 'Insumo');
+  const actualizado = await repository.update('insumos', insumo.id, { imagen_url: imagenUrl });
+  return insumoResumen(actualizado || { ...insumo, imagen_url: imagenUrl });
+}
+
 module.exports = {
   estadoStock,
   listInventario,
@@ -602,4 +626,5 @@ module.exports = {
   verificarStock,
   aplicarAjustes,
   actualizarMinimo,
+  actualizarImagen,
 };

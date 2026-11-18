@@ -57,4 +57,9 @@ router.patch('/:insumoId/minimo', permiso, manejar(async (req, res) => {
   res.json(await service.actualizarMinimo(req.params.insumoId, req.body));
 }));
 
+// PATCH /api/inventario/:insumoId/imagen — { imagen_url: string|null }
+router.patch('/:insumoId/imagen', permiso, manejar(async (req, res) => {
+  res.json(await service.actualizarImagen(req.params.insumoId, req.body));
+}));
+
 module.exports = router;

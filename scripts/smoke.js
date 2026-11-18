@@ -1431,6 +1431,209 @@ function resumen(value) {
       throw new Error(`El listado de activos no respetó paginación/meta/DTO: ${JSON.stringify({ creado: activoCreado.body, lista: activos.body })}`);
     }
 
+    // ---- Imágenes: subida (memoria => data URL) y persistencia de la URL ----
+    // PNG 1x1 transparente: sirve para validar MIME + firma real sin binarios.
+    const PNG_1X1 = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+
+    const formularioImagen = new FormData();
+    formularioImagen.append('carpeta', 'platillos');
+    formularioImagen.append('file', new Blob([PNG_1X1], { type: 'image/png' }), 'pixel.png');
+    const subidaImagen = await fetch(`${base}/uploads/imagen`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formularioImagen,
+    });
+    const subidaImagenBody = await subidaImagen.json().catch(() => null);
+    const subidaImagenOk =
+      subidaImagen.status === 201 &&
+      Boolean(subidaImagenBody) &&
+      typeof subidaImagenBody.url === 'string' &&
+      subidaImagenBody.url.startsWith('data:image/png') &&
+      subidaImagenBody.content_type === 'image/png' &&
+      subidaImagenBody.path === null &&
+      Number(subidaImagenBody.size) > 0;
+    results.push({
+      name: 'POST /api/uploads/imagen (data URL)',
+      status: subidaImagenOk ? 201 : 500,
+      detail: subidaImagenOk
+        ? `size=${subidaImagenBody.size} · path=${subidaImagenBody.path}`
+        : JSON.stringify(subidaImagenBody),
+    });
+    if (!subidaImagenOk) {
+      throw new Error(
+        `La subida de imagen no devolvió un data URL válido: ${JSON.stringify(subidaImagenBody)}`,
+      );
+    }
+
+    const formularioInvalido = new FormData();
+    formularioInvalido.append('carpeta', 'platillos');
+    formularioInvalido.append(
+      'file',
+      new Blob(['esto no es una imagen'], { type: 'text/plain' }),
+      'nota.txt',
+    );
+    const subidaInvalida = await fetch(`${base}/uploads/imagen`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formularioInvalido,
+    });
+    const subidaInvalidaBody = await subidaInvalida.json().catch(() => null);
+    const subidaInvalidaOk =
+      subidaInvalida.status === 400 &&
+      Boolean(subidaInvalidaBody) &&
+      subidaInvalidaBody.error &&
+      subidaInvalidaBody.error.code === 'ARCHIVO_INVALIDO';
+    results.push({
+      name: 'POST /api/uploads/imagen (MIME inválido 400)',
+      status: subidaInvalidaOk ? 400 : 500,
+      detail: subidaInvalidaOk
+        ? `code=${subidaInvalidaBody.error.code}`
+        : JSON.stringify(subidaInvalidaBody),
+    });
+    if (!subidaInvalidaOk) {
+      throw new Error(
+        `Un archivo que no es imagen debía devolver 400 ARCHIVO_INVALIDO: ${JSON.stringify(subidaInvalidaBody)}`,
+      );
+    }
+
+    // El MIME declarado no basta: el contenido debe tener la firma real.
+    const formularioFirma = new FormData();
+    formularioFirma.append('carpeta', 'activos');
+    formularioFirma.append(
+      'file',
+      new Blob(['contenido falso con MIME de PNG'], { type: 'image/png' }),
+      'falso.png',
+    );
+    const subidaFirma = await fetch(`${base}/uploads/imagen`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formularioFirma,
+    });
+    const subidaFirmaBody = await subidaFirma.json().catch(() => null);
+    const subidaFirmaOk =
+      subidaFirma.status === 400 &&
+      Boolean(subidaFirmaBody) &&
+      subidaFirmaBody.error &&
+      subidaFirmaBody.error.code === 'ARCHIVO_INVALIDO';
+    results.push({
+      name: 'POST /api/uploads/imagen (firma falsa 400)',
+      status: subidaFirmaOk ? 400 : 500,
+      detail: subidaFirmaOk
+        ? `code=${subidaFirmaBody.error.code}`
+        : JSON.stringify(subidaFirmaBody),
+    });
+    if (!subidaFirmaOk) {
+      throw new Error(
+        `Un archivo con MIME image/png pero sin firma PNG debía devolver 400: ${JSON.stringify(subidaFirmaBody)}`,
+      );
+    }
+
+    const URL_INSUMO = 'https://cdn.fratellis.pe/insumos/papa.jpg';
+    const insumoImagenId = inventarioPagina.body.data[0].id;
+    const insumoImagen = await request(base, 'PATCH', `/inventario/${insumoImagenId}/imagen`, {
+      token,
+      body: { imagen_url: URL_INSUMO },
+    });
+    const inventarioConImagen = await request(base, 'GET', '/inventario?page=1&limit=100', { token });
+    const insumoConImagen = Array.isArray(inventarioConImagen.body.data)
+      ? inventarioConImagen.body.data.find((item) => item.id === insumoImagenId)
+      : null;
+    const insumoImagenOk =
+      insumoImagen.ok &&
+      insumoImagen.body.id === insumoImagenId &&
+      insumoImagen.body.imagen_url === URL_INSUMO &&
+      Boolean(insumoConImagen) &&
+      insumoConImagen.imagen_url === URL_INSUMO;
+    results.push({
+      name: 'PATCH /api/inventario/:id/imagen',
+      status: insumoImagenOk ? 200 : 500,
+      detail: insumoImagenOk
+        ? `insumo=${insumoImagenId} · imagen=${insumoConImagen.imagen_url}`
+        : JSON.stringify({ patch: insumoImagen.body, lista: insumoConImagen }),
+    });
+    if (!insumoImagenOk) {
+      throw new Error(
+        `La imagen del insumo no se guardó/expuso: ${JSON.stringify({ patch: insumoImagen.body, lista: insumoConImagen })}`,
+      );
+    }
+
+    const URL_PROVEEDOR = 'https://cdn.fratellis.pe/proveedores/el-sol.png';
+    const proveedorImagenId = proveedores.body.data[0].id;
+    const proveedorImagen = await request(
+      base,
+      'PATCH',
+      `/compras/proveedores/${proveedorImagenId}`,
+      { token, body: { imagen_url: URL_PROVEEDOR } },
+    );
+    const proveedoresConImagen = await request(
+      base,
+      'GET',
+      '/compras/proveedores?page=1&limit=100',
+      { token },
+    );
+    const proveedorConImagen = Array.isArray(proveedoresConImagen.body.data)
+      ? proveedoresConImagen.body.data.find((item) => item.id === proveedorImagenId)
+      : null;
+    const proveedorImagenOk =
+      proveedorImagen.ok &&
+      proveedorImagen.body.id === proveedorImagenId &&
+      proveedorImagen.body.imagen_url === URL_PROVEEDOR &&
+      Boolean(proveedorConImagen) &&
+      proveedorConImagen.imagen_url === URL_PROVEEDOR;
+    results.push({
+      name: 'PATCH /api/compras/proveedores/:id',
+      status: proveedorImagenOk ? 200 : 500,
+      detail: proveedorImagenOk
+        ? `proveedor=${proveedorImagenId} · imagen=${proveedorConImagen.imagen_url}`
+        : JSON.stringify({ patch: proveedorImagen.body, lista: proveedorConImagen }),
+    });
+    if (!proveedorImagenOk) {
+      throw new Error(
+        `La imagen del proveedor no se guardó/expuso: ${JSON.stringify({ patch: proveedorImagen.body, lista: proveedorConImagen })}`,
+      );
+    }
+
+    // Activos: los cuatro campos nuevos del formulario (imagen, proveedor,
+    // garantía y observaciones) deben persistir y volver en el DTO.
+    const URL_ACTIVO = 'https://cdn.fratellis.pe/activos/horno.jpg';
+    const activoImagen = await request(base, 'PATCH', `/activos/${activoCreado.body.id}`, {
+      token,
+      body: {
+        imagen_url: URL_ACTIVO,
+        proveedor: 'Proveedor smoke',
+        garantia_meses: 12,
+        observaciones: 'Observación smoke',
+      },
+    });
+    const activosConImagen = await request(base, 'GET', '/activos?page=1&limit=100&sort=id:desc', {
+      token,
+    });
+    const activoConImagen = Array.isArray(activosConImagen.body.data)
+      ? activosConImagen.body.data.find((item) => item.id === activoCreado.body.id)
+      : null;
+    const activoImagenOk =
+      activoImagen.ok &&
+      Boolean(activoConImagen) &&
+      activoConImagen.imagen_url === URL_ACTIVO &&
+      activoConImagen.proveedor === 'Proveedor smoke' &&
+      activoConImagen.garantia_meses === 12 &&
+      activoConImagen.observaciones === 'Observación smoke';
+    results.push({
+      name: 'PATCH /api/activos/:id (imagen/proveedor/garantía)',
+      status: activoImagenOk ? 200 : 500,
+      detail: activoImagenOk
+        ? `activo=${activoCreado.body.id} · garantia=${activoConImagen.garantia_meses}`
+        : JSON.stringify({ patch: activoImagen.body, lista: activoConImagen }),
+    });
+    if (!activoImagenOk) {
+      throw new Error(
+        `Los datos de imagen/proveedor/garantía del activo no se guardaron: ${JSON.stringify({ patch: activoImagen.body, lista: activoConImagen })}`,
+      );
+    }
+
     const mantenimientoCreado = await request(
       base,
       'POST',

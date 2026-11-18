@@ -32,7 +32,12 @@ function aNumero(valor) {
 
 function proveedorResumen(proveedor) {
   return proveedor
-    ? { id: proveedor.id, ruc: proveedor.ruc, razon_social: proveedor.razon_social }
+    ? {
+      id: proveedor.id,
+      ruc: proveedor.ruc,
+      razon_social: proveedor.razon_social,
+      imagen_url: proveedor.imagen_url === undefined ? null : proveedor.imagen_url,
+    }
     : null;
 }
 
@@ -796,6 +801,10 @@ async function listProveedores(query = {}) {
           proveedor.razon_social.toLowerCase().includes(buscado) ||
           proveedor.ruc.includes(buscado),
       )
+      .map((proveedor) => ({
+        ...proveedor,
+        imagen_url: proveedor.imagen_url === undefined ? null : proveedor.imagen_url,
+      }))
       .sort((a, b) => a.razon_social.localeCompare(b.razon_social));
 
     return paginate(data, query);
@@ -846,6 +855,7 @@ async function crearProveedor(body) {
       telefono: optionalString(payload.telefono, 'telefono', { max: 20 }),
       direccion: optionalString(payload.direccion, 'direccion', { max: 200 }),
       email: optionalString(payload.email, 'email', { max: 150 }),
+      imagen_url: optionalString(payload.imagen_url, 'imagen_url', { max: 500 }),
       activo: true,
     };
     store.state.proveedores.push(proveedor);
@@ -864,6 +874,7 @@ async function crearProveedor(body) {
     telefono: optionalString(payload.telefono, 'telefono', { max: 20 }),
     direccion: optionalString(payload.direccion, 'direccion', { max: 200 }),
     email: optionalString(payload.email, 'email', { max: 150 }),
+    imagen_url: optionalString(payload.imagen_url, 'imagen_url', { max: 500 }),
     activo: true,
   };
 
@@ -875,6 +886,51 @@ async function crearProveedor(body) {
     }
     throw db.persistenceError('No se pudo registrar el proveedor.', error);
   }
+}
+
+// Patch de proveedor: datos básicos e imagen. El RUC no se edita (es la
+// identidad tributaria y tiene UNIQUE en la tabla).
+async function actualizarProveedor(id, body) {
+  const proveedorId = parseId(id, 'id');
+  const proveedor = await db.findOrThrow('proveedores', proveedorId, 'Proveedor');
+  const payload = requiredObject(body);
+
+  const patch = {};
+  if (payload.razon_social !== undefined) {
+    patch.razon_social = requiredString(payload.razon_social, 'razon_social', { max: 150 });
+  }
+  if (payload.contacto_nombre !== undefined) {
+    patch.contacto_nombre = optionalString(payload.contacto_nombre, 'contacto_nombre', { max: 120 });
+  }
+  if (payload.telefono !== undefined) {
+    patch.telefono = optionalString(payload.telefono, 'telefono', { max: 20 });
+  }
+  if (payload.direccion !== undefined) {
+    patch.direccion = optionalString(payload.direccion, 'direccion', { max: 200 });
+  }
+  if (payload.email !== undefined) {
+    patch.email = optionalString(payload.email, 'email', { max: 150 });
+  }
+  if (payload.imagen_url !== undefined) {
+    patch.imagen_url = optionalString(payload.imagen_url, 'imagen_url', { max: 500 });
+  }
+
+  if (!db.isSupabase()) {
+    Object.assign(proveedor, patch);
+    return proveedor;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return proveedor;
+  }
+
+  let actualizado;
+  try {
+    actualizado = await repository.update('proveedores', proveedor.id, patch);
+  } catch (error) {
+    throw db.persistenceError('No se pudo actualizar el proveedor.', error);
+  }
+  return actualizado || { ...proveedor, ...patch };
 }
 
 module.exports = {
@@ -889,4 +945,5 @@ module.exports = {
   plantillaCompra,
   listProveedores,
   crearProveedor,
+  actualizarProveedor,
 };

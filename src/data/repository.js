@@ -477,6 +477,15 @@ function table(name) {
   return getClient().from(name);
 }
 
+// Acceso al servicio de Storage (bucket de imágenes). Solo tiene sentido con
+// DB_MODE=supabase: en memoria no hay almacenamiento de objetos.
+function storage() {
+  if (mode() === 'memory') {
+    throw new Error('storage() solo está disponible en DB_MODE=supabase.');
+  }
+  return getClient().storage;
+}
+
 async function health() {
   if (mode() === 'memory') {
     return {
@@ -516,5 +525,6 @@ module.exports = {
   rpc,
   esFuncionInexistente,
   table,
+  storage,
   health,
 };

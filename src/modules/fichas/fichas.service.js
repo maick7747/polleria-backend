@@ -327,7 +327,7 @@ async function crearPlatillo(body) {
   const nombre = requiredString(payload.nombre, 'nombre', { max: 120 });
   const descripcion = optionalString(payload.descripcion, 'descripcion', { max: 300 });
   const precioVenta = requiredNumber(payload.precio_venta, 'precio_venta', { min: 0 });
-  const imagenUrl = optionalString(payload.imagen_url, 'imagen_url', { max: 255 });
+  const imagenUrl = optionalString(payload.imagen_url, 'imagen_url', { max: 500 });
 
   if (!db.isSupabase()) {
     const platillo = {
@@ -381,7 +381,7 @@ async function actualizarPlatillo(id, body) {
     ? requiredNumber(payload.precio_venta, 'precio_venta', { min: 0 })
     : undefined;
   const imagenUrl = payload.imagen_url !== undefined
-    ? optionalString(payload.imagen_url, 'imagen_url', { max: 255 })
+    ? optionalString(payload.imagen_url, 'imagen_url', { max: 500 })
     : undefined;
 
   if (!db.isSupabase()) {

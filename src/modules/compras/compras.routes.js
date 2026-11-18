@@ -31,6 +31,12 @@ router.post('/proveedores', permiso, manejar(async (req, res) => {
   res.status(201).json(await service.crearProveedor(req.body));
 }));
 
+// PATCH /api/compras/proveedores/:id — datos básicos e imagen. Va antes de
+// /:id para que "proveedores" no se interprete como identificador de compra.
+router.patch('/proveedores/:id', permiso, manejar(async (req, res) => {
+  res.json(await service.actualizarProveedor(req.params.id, req.body));
+}));
+
 // GET /api/compras?estado=&proveedor_id=&desde=&hasta=&q=&sort=&page=&limit=&after=<id>
 // `after` (entero >= 1) devuelve solo compras con id mayor al cursor.
 // Incluye meta.next_cursor y meta.has_more.
@@ -74,6 +80,10 @@ proveedoresRouter.get('/', permiso, manejar(async (req, res) => {
 
 proveedoresRouter.post('/', permiso, manejar(async (req, res) => {
   res.status(201).json(await service.crearProveedor(req.body));
+}));
+
+proveedoresRouter.patch('/:id', permiso, manejar(async (req, res) => {
+  res.json(await service.actualizarProveedor(req.params.id, req.body));
 }));
 
 module.exports = router;

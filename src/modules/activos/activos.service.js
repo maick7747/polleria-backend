@@ -88,6 +88,12 @@ function activoDTO(activo, mantenimientos = []) {
   const proximoMantenimiento = programados.length > 0 ? programados[0] : null;
   return {
     ...activo,
+    imagen_url: activo.imagen_url === undefined ? null : activo.imagen_url,
+    proveedor: activo.proveedor === undefined ? null : activo.proveedor,
+    garantia_meses: activo.garantia_meses === null || activo.garantia_meses === undefined
+      ? null
+      : Number(activo.garantia_meses),
+    observaciones: activo.observaciones === undefined ? null : activo.observaciones,
     cantidad: Number(activo.cantidad),
     costo_adquisicion: db.round2(aNumero(activo.costo_adquisicion)),
     vida_util_meses: vida,
@@ -233,6 +239,14 @@ async function crearActivo(body, usuario) {
     estado: 'activo',
     fecha_baja: null,
     motivo_baja: null,
+    imagen_url: optionalString(payload.imagen_url, 'imagen_url', { max: 500 }),
+    proveedor: optionalString(payload.proveedor, 'proveedor', { max: 150 }),
+    garantia_meses: payload.garantia_meses === undefined
+      || payload.garantia_meses === null
+      || payload.garantia_meses === ''
+      ? null
+      : requiredInt(payload.garantia_meses, 'garantia_meses', { min: 0 }),
+    observaciones: optionalString(payload.observaciones, 'observaciones', { max: 300 }),
     usuario_id: usuario.id,
   };
 
@@ -292,6 +306,20 @@ async function actualizarActivo(id, body) {
   if (payload.fecha_adquisicion !== undefined) {
     patch.fecha_adquisicion = optionalDate(payload.fecha_adquisicion, 'fecha_adquisicion')
       || activo.fecha_adquisicion;
+  }
+  if (payload.imagen_url !== undefined) {
+    patch.imagen_url = optionalString(payload.imagen_url, 'imagen_url', { max: 500 });
+  }
+  if (payload.proveedor !== undefined) {
+    patch.proveedor = optionalString(payload.proveedor, 'proveedor', { max: 150 });
+  }
+  if (payload.garantia_meses !== undefined) {
+    patch.garantia_meses = payload.garantia_meses === null || payload.garantia_meses === ''
+      ? null
+      : requiredInt(payload.garantia_meses, 'garantia_meses', { min: 0 });
+  }
+  if (payload.observaciones !== undefined) {
+    patch.observaciones = optionalString(payload.observaciones, 'observaciones', { max: 300 });
   }
 
   const estadoFinal = patch.estado === undefined ? activo.estado : patch.estado;
