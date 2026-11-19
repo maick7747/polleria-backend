@@ -140,7 +140,8 @@ async function cuentaDetalle(id) {
 
   const cuenta = await db.findOrThrow('cuentas', parseId(id), 'Cuenta');
   const [mesa, rondas, pagosResult, usuarioApertura, cliente] = await Promise.all([
-    repository.getById('mesas', cuenta.mesa_id),
+    // Las cuentas de mostrador/delivery no tienen mesa (mesa_id null).
+    cuenta.mesa_id ? repository.getById('mesas', cuenta.mesa_id) : null,
     rondasDeCuenta(cuenta.id),
     repository.list('pagos', {
       filters: { cuenta_id: cuenta.id },

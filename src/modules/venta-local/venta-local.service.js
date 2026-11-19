@@ -243,7 +243,8 @@ async function resumenCuenta(cuenta, nombres = null) {
   }
 
   const [mesa, rondas, usuarioApertura, cliente] = await Promise.all([
-    repository.getById('mesas', cuenta.mesa_id),
+    // Las cuentas de mostrador/delivery no tienen mesa (mesa_id null).
+    cuenta.mesa_id ? repository.getById('mesas', cuenta.mesa_id) : null,
     rondasDeCuenta(cuenta.id),
     nombres
       ? nombres.get(cuenta.usuario_apertura_id) ?? null
