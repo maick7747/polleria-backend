@@ -28,6 +28,9 @@ const {
 } = require('../../middleware/validate');
 const pedidosLib = require('../../lib/pedidos');
 const pedidosDb = require('../../lib/pedidos-db');
+const cuentaUniversal = require('../../lib/cuenta-universal');
+const cuentaTotales = require('../../lib/cuenta-totales');
+const cerrarCuenta = require('../cerrar-cuenta/cerrar-cuenta.service');
 
 const CANALES_PROPIO = ['whatsapp', 'telefono', 'delivery_propio'];
 // El enum enum_canal_pedido solo admite 'whatsapp' y 'delivery_propio' para el
@@ -191,6 +194,7 @@ async function crearPedidoBaseSupabase(options) {
     tipo_consumo = 'delivery',
     items,
     cliente_id = null,
+    cuenta_id = null,
     usuario_id,
     observaciones = null,
     direccion_entrega,
@@ -222,6 +226,7 @@ async function crearPedidoBaseSupabase(options) {
     canal,
     tipo_consumo,
     cliente_id: cliente_id || null,
+    cuenta_id: cuenta_id || null,
     usuario_cajero_id: usuario_id,
     estado: 'borrador',
     estado_pago: 'pendiente',
@@ -466,6 +471,7 @@ async function crearPedidoMemoriaSinLineas(options) {
   const {
     canal,
     cliente_id,
+    cuenta_id = null,
     usuario_id,
     observaciones,
     direccion_entrega,
@@ -482,7 +488,7 @@ async function crearPedidoMemoriaSinLineas(options) {
     canal,
     tipo_consumo: 'delivery',
     mesa_id: null,
-    cuenta_id: null,
+    cuenta_id: cuenta_id || null,
     cliente_id: cliente_id || null,
     repartidor_id: null,
     usuario_cajero_id: usuario_id,
@@ -533,17 +539,26 @@ async function crearPedido(body, usuario) {
   const referencia = payload.cliente ? payload.cliente.referencia : null;
 
   if (db.isSupabase()) {
+    const cuenta = await cuentaUniversal.crearCuenta({
+      tipoServicio: 'delivery',
+      usuarioId: usuario.id,
+      clienteId: cliente ? cliente.id : null,
+    });
+
     const { pedido, detalles } = await crearPedidoBaseSupabase({
       canal: canal === 'telefono' ? 'whatsapp' : canal,
       tipo_consumo: 'delivery',
       items: payload.items,
       cliente_id: cliente ? cliente.id : null,
+      cuenta_id: cuenta.id,
       usuario_id: usuario.id,
       observaciones: payload.observaciones,
       direccion_entrega: direccion,
       referencia_entrega: referencia,
       costo_delivery: costo,
     });
+
+    await cuentaTotales.recalcularTotalCuenta(cuenta.id);
 
     if (payload.enviar_cocina !== false) {
       const resultado = await pedidosDb.enviarPedidoACocina(pedido, usuario.id);
@@ -557,12 +572,18 @@ async function crearPedido(body, usuario) {
   if (payload.items !== undefined && payload.items !== null && !Array.isArray(payload.items)) {
     requiredArray(payload.items, 'items', { max: 100 });
   }
+  const cuenta = await cuentaUniversal.crearCuenta({
+    tipoServicio: 'delivery',
+    usuarioId: usuario.id,
+    clienteId: cliente ? cliente.id : null,
+  });
   const pedido = conLineas
     ? pedidosLib.createPedidoRecord({
       canal,
       tipo_consumo: 'delivery',
       items: payload.items,
       cliente_id: cliente ? cliente.id : null,
+      cuenta_id: cuenta.id,
       usuario_id: usuario.id,
       observaciones: payload.observaciones,
       direccion_entrega: direccion,
@@ -572,12 +593,15 @@ async function crearPedido(body, usuario) {
     : await crearPedidoMemoriaSinLineas({
       canal,
       cliente_id: cliente ? cliente.id : null,
+      cuenta_id: cuenta.id,
       usuario_id: usuario.id,
       observaciones: payload.observaciones,
       direccion_entrega: direccion,
       referencia_entrega: referencia,
       costo_delivery: costo,
     });
+
+  await cuentaTotales.recalcularTotalCuenta(cuenta.id);
 
   if (payload.enviar_cocina !== false) {
     pedidosLib.enviarPedidoACocina(pedido, usuario.id);
@@ -650,11 +674,15 @@ async function actualizarEstado(id, body) {
   return pedidosLib.pedidoConDetalles(pedido);
 }
 
+// Registra el cobro contraentrega del delivery propio. El repartidor cobra en
+// la puerta; el cajero lo registra al volver. Desde la caja unificada el cobro
+// pasa por la cuenta del pedido (misma RPC que mesa y mostrador).
 async function registrarEntrega(id, body, usuario) {
-  const pedido = await db.findOrThrow('pedidos', parseId(id), 'Pedido');
   const payload = requiredObject(body);
   const metodo = requiredEnum(payload.metodo, 'metodo', METODOS_ENTREGA);
-  await db.requireCajaAbierta();
+  const pedido = db.isSupabase()
+    ? await db.findOrThrow('pedidos', parseId(id), 'Pedido')
+    : store.findOrThrow('pedidos', parseId(id), 'Pedido');
 
   if (pedido.estado === 'cancelado') {
     throw new AppError(409, 'CONFLICT', 'El pedido está cancelado.');
@@ -664,105 +692,43 @@ async function registrarEntrega(id, body, usuario) {
   }
 
   const monto = payload.monto === undefined
-    ? pedido.total
+    ? undefined
     : optionalNumber(payload.monto, 'monto', { min: 0 });
-  if (monto + 0.009 < aNumero(pedido.total)) {
-    throw new AppError(422, 'BUSINESS_RULE_VIOLATION', 'El monto recibido es menor al total del pedido.', [
-      { total: aNumero(pedido.total), monto },
-    ]);
-  }
 
-  const ahora = db.nowIso();
-
-  if (!db.isSupabase()) {
-    pedido.estado = 'cobrado';
-    pedido.estado_pago = 'pagado';
-    pedido.metodo_pago = metodo;
+  // El repartidor entregó el pedido completo: se marcan todas las líneas para
+  // que la RPC de cobro no lo bloquee por "platos no entregados".
+  const ahora = db.isSupabase() ? db.nowIso() : store.nowIso();
+  if (db.isSupabase()) {
+    await repository.updateWhere(
+      'pedidos',
+      { id: pedido.id },
+      {
+        estado_entrega: 'entregado',
+        fecha_entrega: pedido.fecha_entrega || ahora,
+      },
+    );
+  } else {
     pedido.estado_entrega = 'entregado';
     pedido.fecha_entrega = pedido.fecha_entrega || ahora;
-
-    const pago = store.addPago({
-      pedido_id: pedido.id,
-      metodo,
-      monto: pedido.total,
-      es_contraentrega: true,
-      usuario_id: usuario.id,
-      fecha: ahora,
-    });
-
-    return {
-      pedido: pedidosLib.pedidoConDetalles(pedido),
-      pago,
-      vuelto: store.round2(Math.max(0, monto - pedido.total)),
-    };
   }
+  await cuentaUniversal.marcarLineasEntregadas(pedido.id, usuario.id);
 
-  // El pago se inserta primero; si el pedido no se puede cobrar se elimina el
-  // pago recién creado (compensación) para no dejar cobros huérfanos.
-  let pago;
-  try {
-    pago = await repository.insert('pagos', {
-      pedido_id: pedido.id,
-      metodo,
-      monto: aNumero(pedido.total),
-      es_contraentrega: true,
-      usuario_id: usuario.id,
-      fecha: ahora,
-    });
-  } catch (error) {
-    throw db.persistenceError('No se pudo registrar el pago contraentrega.', error);
-  }
+  const cuentaId = await cuentaUniversal.asegurarCuentaDePedido(pedido, usuario);
+  const resultado = await cerrarCuenta.cobrarCuenta(
+    cuentaId,
+    { metodo, ...(monto === undefined ? {} : { monto }) },
+    usuario,
+  );
+  const cobrado = resultado.cuenta.pedidos.find((item) => item.id === pedido.id)
+    ?? resultado.cuenta.pedidos[0]
+    ?? resultado.cuenta;
 
-  let actualizado;
-  try {
-    // UPDATE condicional: solo una terminal puede pasar el pedido a cobrado.
-    // Si otra ya lo cobró, se elimina el pago recién insertado.
-    const filas = await repository.updateWhere(
-      'pedidos',
-      {
-        id: pedido.id,
-        estado_pago: 'pendiente',
-        estado: ['borrador', 'en_cocina', 'servido'],
-      },
-      {
-        estado: 'cobrado',
-        estado_pago: 'pagado',
-        metodo_pago: metodo,
-        fecha_entrega: pedido.fecha_entrega || ahora,
-        estado_entrega: 'entregado',
-      },
-    );
-    actualizado = filas && filas.length > 0 ? filas[0] : null;
-  } catch (error) {
-    try {
-      await repository.remove('pagos', pago.id);
-    } catch (limpieza) {
-      // el pago queda huérfano; el error original se informa igual
-    }
-    throw db.persistenceError(
-      'El pago se registró pero no se pudo cerrar el pedido; se intentó eliminar el pago.',
-      error,
-    );
-  }
-
-  if (!actualizado) {
-    try {
-      await repository.remove('pagos', pago.id);
-    } catch (limpieza) {
-      // el pago queda huérfano; el 409 se informa igual
-    }
-    throw new AppError(
-      409,
-      'CONFLICT',
-      'El pedido ya fue cobrado o cancelado por otra terminal.',
-    );
-  }
-
-  const dto = await pedidosDb.pedidoConDetalles(actualizado);
   return {
-    pedido: { ...dto, estado_entrega: 'entregado' },
-    pago: { ...pago, monto: aNumero(pago.monto) },
-    vuelto: db.round2(Math.max(0, monto - aNumero(pedido.total))),
+    pedido: cobrado,
+    cuenta: resultado.cuenta,
+    pago: resultado.pago,
+    comprobante: resultado.comprobante,
+    vuelto: resultado.vuelto,
   };
 }
 

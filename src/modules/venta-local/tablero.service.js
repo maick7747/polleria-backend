@@ -98,6 +98,7 @@ function normalizarPedido(pedido, extras = {}) {
 
 function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta, totalesPorCuenta = new Map()) {
   const porMesa = new Map(cuentasAbiertas.map((cuenta) => [cuenta.mesa_id, cuenta]));
+  const mesaPorId = new Map(mesas.map((mesa) => [mesa.id, mesa]));
   const mesasActivas = mesas.filter((mesa) => mesa.activa !== false);
   const mesasOcupadas = mesasActivas.filter((mesa) => porMesa.has(mesa.id)).length;
   const totalDe = (cuenta) => {
@@ -152,6 +153,10 @@ function armarTablero(mesas, cuentasAbiertas, pedidosPorCuenta, totalesPorCuenta
       return {
         id: cuenta.id,
         mesa_id: cuenta.mesa_id,
+        mesa_numero: cuenta.mesa_id
+          ? (mesaPorId.get(cuenta.mesa_id)?.numero ?? null)
+          : null,
+        tipo_servicio: cuenta.tipo_servicio ?? (cuenta.mesa_id ? 'sala' : null),
         estado: cuenta.estado,
         subtotal: totales.subtotal,
         igv: totales.igv,

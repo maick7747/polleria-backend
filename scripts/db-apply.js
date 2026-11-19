@@ -35,6 +35,7 @@ const FILES_BASE = [
   'migrations/017_rpc_cobrar_cuenta.sql',
   'migrations/018_cobro_requiere_entrega.sql',
   'migrations/019_imagenes.sql',
+  'migrations/020_caja_unificada.sql',
   'seed.sql',
 ];
 

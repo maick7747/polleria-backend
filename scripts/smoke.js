@@ -970,7 +970,7 @@ function resumen(value) {
       paraLlevar.status === 201 &&
       paraLlevar.body.tipo_consumo === 'para_llevar' &&
       paraLlevar.body.estado === 'en_cocina' &&
-      paraLlevar.body.cuenta_id === null &&
+      typeof paraLlevar.body.cuenta_id === 'number' &&
       paraLlevar.body.cliente_nombre === 'Cliente Mostrador';
     results.push({
       name: 'POST /api/pedidos (para_llevar + enviar_cocina)',
@@ -1011,6 +1011,17 @@ function resumen(value) {
     }
 
     const totalLlevar = Number(paraLlevar.body.total);
+    // Caja unificada: mostrador cobra al recoger, así que primero se marca
+    // el pedido como listo/servido (KDS) y luego se registra el cobro.
+    const listoLlevar = await request(
+      base,
+      'PATCH',
+      `/kds/pedidos/${paraLlevar.body.id}/listo`,
+      { token, body: {} },
+    );
+    if (!listoLlevar.ok) {
+      throw new Error(`No se pudo marcar listo el pedido para llevar: ${JSON.stringify(listoLlevar.body)}`);
+    }
     const cobroLlevar = await request(base, 'POST', `/pedidos/${paraLlevar.body.id}/cobrar`, {
       token,
       body: { metodo: 'efectivo', monto: totalLlevar },
@@ -1021,10 +1032,9 @@ function resumen(value) {
       cobroLlevar.body.pedido.estado === 'cobrado' &&
       cobroLlevar.body.pedido.estado_pago === 'pagado' &&
       cobroLlevar.body.pago &&
-      cobroLlevar.body.pago.pedido_id === paraLlevar.body.id &&
-      cobroLlevar.body.pago.cuenta_id === null &&
+      cobroLlevar.body.pago.cuenta_id === paraLlevar.body.cuenta_id &&
       String(cobroLlevar.body.comprobante && cobroLlevar.body.comprobante.numero)
-        .startsWith('T001-') &&
+        .startsWith('B001-') &&
       Number(cobroLlevar.body.vuelto) === 0;
     results.push({
       name: 'POST /api/pedidos/:id/cobrar (mostrador)',
