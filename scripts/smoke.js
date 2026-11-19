@@ -2170,6 +2170,165 @@ function resumen(value) {
       throw new Error('La liquidación externa no quedó persistida/listada.');
     }
 
+    // ---- Liquidación externa por pedidos (conciliación con depósito) ----
+    const pedidoExterno = await request(base, 'POST', '/delivery-externo/pedidos', {
+      token,
+      body: {
+        plataforma: 'rappi',
+        cliente: {
+          nombre: 'Cliente Externo Smoke',
+          telefono: '999777666',
+          direccion: 'Av. Smoke 456',
+        },
+        items: [{ platillo_id: 1, cantidad: 2 }],
+        observaciones: 'Pedido externo para liquidar',
+      },
+    });
+    const pedidoExternoId = pedidoExterno.body && pedidoExterno.body.id;
+
+    const pendientesAntes = await request(
+      base,
+      'GET',
+      '/delivery-externo/pendientes-liquidar?plataforma=rappi',
+      { token },
+    );
+    const pendienteAntes = (pendientesAntes.body.data || []).find(
+      (item) => item.id === pedidoExternoId,
+    );
+    const pedidoExternoOk =
+      pedidoExterno.status === 201 &&
+      typeof pedidoExternoId === 'number' &&
+      Number(pedidoExterno.body.comision) > 0 &&
+      pendientesAntes.ok &&
+      Boolean(pendienteAntes) &&
+      typeof pendientesAntes.body.meta.bruto === 'number' &&
+      typeof pendientesAntes.body.meta.comision === 'number' &&
+      typeof pendientesAntes.body.meta.neto === 'number' &&
+      Number(pendientesAntes.body.meta.total) >= 1;
+    results.push({
+      name: 'POST externo + GET pendientes-liquidar',
+      status: pedidoExternoOk ? 201 : 500,
+      detail: pedidoExternoOk
+        ? `pedido=${pedidoExternoId} · neto=${pendienteAntes.monto_neto} · pendientes=${pendientesAntes.body.meta.total} · bruto=${pendientesAntes.body.meta.bruto}`
+        : JSON.stringify({ pedido: pedidoExterno.body, pendientes: pendientesAntes.body }),
+    });
+    if (!pedidoExternoOk) {
+      throw new Error(
+        `El pedido externo no aparece en pendientes-liquidar con sus totales: ${JSON.stringify({
+          pedido: pedidoExterno.body,
+          pendientes: pendientesAntes.body,
+        })}`,
+      );
+    }
+
+    const entregaExterna = await request(
+      base,
+      'PATCH',
+      `/delivery-externo/pedidos/${pedidoExternoId}/entrega`,
+      { token },
+    );
+    const entregaExternaOk =
+      entregaExterna.ok &&
+      entregaExterna.body.estado_entrega === 'entregado' &&
+      Boolean(entregaExterna.body.fecha_entrega);
+    results.push({
+      name: 'PATCH /api/delivery-externo/pedidos/:id/entrega',
+      status: entregaExternaOk ? 200 : 500,
+      detail: entregaExternaOk
+        ? `pedido=${pedidoExternoId} · estado_entrega=${entregaExterna.body.estado_entrega}`
+        : JSON.stringify(entregaExterna.body),
+    });
+    if (!entregaExternaOk) {
+      throw new Error(`La entrega externa no se marcó: ${JSON.stringify(entregaExterna.body)}`);
+    }
+
+    const liquidacionPedidos = await request(base, 'POST', '/delivery-externo/liquidaciones', {
+      token,
+      body: {
+        plataforma: 'rappi',
+        pedido_ids: [pedidoExternoId],
+        monto_depositado: Number(pendienteAntes.monto_neto),
+        referencia: 'DEP-SMOKE-001',
+      },
+    });
+    const liquidacionPedidosOk =
+      liquidacionPedidos.status === 201 &&
+      liquidacionPedidos.body.estado === 'conciliada' &&
+      Number(liquidacionPedidos.body.diferencia) === 0 &&
+      Number(liquidacionPedidos.body.pedidos) >= 1 &&
+      Number(liquidacionPedidos.body.monto_depositado) === Number(pendienteAntes.monto_neto) &&
+      Number(liquidacionPedidos.body.monto_neto) > 0;
+    results.push({
+      name: 'POST /api/delivery-externo/liquidaciones (pedido_ids)',
+      status: liquidacionPedidosOk ? 201 : 500,
+      detail: liquidacionPedidosOk
+        ? `id=${liquidacionPedidos.body.id} · pedidos=${liquidacionPedidos.body.pedidos} · estado=${liquidacionPedidos.body.estado} · diferencia=${liquidacionPedidos.body.diferencia}`
+        : JSON.stringify(liquidacionPedidos.body),
+    });
+    if (!liquidacionPedidosOk) {
+      throw new Error(
+        `La liquidación por pedidos no concilió: ${JSON.stringify(liquidacionPedidos.body)}`,
+      );
+    }
+
+    const pendientesDespues = await request(
+      base,
+      'GET',
+      '/delivery-externo/pendientes-liquidar?plataforma=rappi',
+      { token },
+    );
+    const detalleLiquidacion = await request(
+      base,
+      'GET',
+      `/delivery-externo/liquidaciones/${liquidacionPedidos.body.id}/pedidos`,
+      { token },
+    );
+    const detalleOk =
+      pendientesDespues.ok &&
+      !(pendientesDespues.body.data || []).some((item) => item.id === pedidoExternoId) &&
+      detalleLiquidacion.ok &&
+      Array.isArray(detalleLiquidacion.body.data) &&
+      detalleLiquidacion.body.data.length === 1 &&
+      detalleLiquidacion.body.data[0].id === pedidoExternoId &&
+      detalleLiquidacion.body.meta &&
+      detalleLiquidacion.body.meta.total === 1;
+    results.push({
+      name: 'GET pendientes-liquidar + /liquidaciones/:id/pedidos',
+      status: detalleOk ? 200 : 500,
+      detail: detalleOk
+        ? `pedido=${pedidoExternoId} ya no pendiente · detalle=${detalleLiquidacion.body.data.length}`
+        : JSON.stringify({ pendientes: pendientesDespues.body, detalle: detalleLiquidacion.body }),
+    });
+    if (!detalleOk) {
+      throw new Error(
+        `El pedido liquidado sigue pendiente o el detalle no lo devuelve: ${JSON.stringify({
+          pendientes: pendientesDespues.body,
+          detalle: detalleLiquidacion.body,
+        })}`,
+      );
+    }
+
+    const liquidacionRepetida = await request(base, 'POST', '/delivery-externo/liquidaciones', {
+      token,
+      body: { pedido_ids: [pedidoExternoId] },
+    });
+    const liquidacionRepetidaOk =
+      liquidacionRepetida.status === 409 &&
+      liquidacionRepetida.body.error &&
+      liquidacionRepetida.body.error.code === 'CONFLICT';
+    results.push({
+      name: 'POST /api/delivery-externo/liquidaciones (repetida 409)',
+      status: liquidacionRepetidaOk ? 409 : 500,
+      detail: liquidacionRepetidaOk
+        ? `code=${liquidacionRepetida.body.error.code}`
+        : JSON.stringify(liquidacionRepetida.body),
+    });
+    if (!liquidacionRepetidaOk) {
+      throw new Error(
+        `Reliquidar un pedido debía devolver 409 CONFLICT: ${JSON.stringify(liquidacionRepetida.body)}`,
+      );
+    }
+
     const rolesCatalogo = await request(base, 'GET', '/configuracion/roles', { token });
     const permisosCatalogo = await request(base, 'GET', '/configuracion/permisos', { token });
     const catalogosOk =

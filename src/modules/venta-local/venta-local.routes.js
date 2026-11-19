@@ -10,6 +10,9 @@ const router = express.Router();
 const permisoVenta = requirePermiso('venta.registrar');
 const permisoCaja = requirePermiso('caja.cobrar');
 const permisoTablero = requirePermiso('venta.registrar', 'caja.cobrar', 'cocina.kds');
+// La bandeja única también la ven el repartidor (solo sus entregas) y el
+// cocinero (lectura); el servicio filtra por repartidor_id.
+const permisoPedidos = requirePermiso('venta.registrar', 'delivery.propio', 'cocina.kds');
 
 // GET /api/venta-local/tablero -> { generado_en, meta:{resumen}, mesas[], cuentas[] }
 // Respuesta cacheable con ETag (304 si no cambió).
@@ -49,8 +52,8 @@ router.patch('/cuentas/:id/cliente', permisoVenta, async (req, res) => {
 // `tipo_consumo` acepta sala | para_llevar | delivery.
 // `after` (entero >= 1) devuelve solo pedidos con id mayor al cursor.
 // Incluye meta.next_cursor y meta.has_more. Respuesta con ETag.
-router.get('/pedidos', permisoVenta, async (req, res) => {
-  responderConEtag(req, res, await service.listPedidos(req.query));
+router.get('/pedidos', permisoPedidos, async (req, res) => {
+  responderConEtag(req, res, await service.listPedidos(req.query, req.usuario));
 });
 
 // Selector liviano (sin detalles) para pantallas que solo buscan un pedido.

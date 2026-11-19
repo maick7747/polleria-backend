@@ -4,6 +4,7 @@ const store = require('../../data/store');
 const repository = require('../../data/repository');
 const db = require('../../data/db');
 const { AppError } = require('../../middleware/error');
+const { hasPermiso } = require('../../middleware/roles');
 const {
   requiredObject,
   requiredString,
@@ -947,7 +948,7 @@ async function listPedidosSelector(query = {}) {
   };
 }
 
-async function listPedidos(query = {}) {
+async function listPedidos(query = {}, usuario = null) {
   const estado = query.estado
     ? requiredEnum(query.estado, 'estado', ['borrador', 'en_cocina', 'servido', 'cobrado', 'cancelado'])
     : null;
@@ -961,8 +962,17 @@ async function listPedidos(query = {}) {
   const hasta = optionalDate(query.hasta, 'hasta');
   const after = optionalAfter(query);
 
+  // El Repartidor solo ve sus propias entregas. Mozo/Cajero/Cocinero ven la
+  // bandeja completa (el Cocinero en modo lectura).
+  const soloPropias = Boolean(
+    usuario
+      && hasPermiso(usuario, 'delivery.propio')
+      && !hasPermiso(usuario, 'venta.registrar'),
+  );
+
   if (!db.isSupabase()) {
     const data = store.state.pedidos
+      .filter((pedido) => !soloPropias || Number(pedido.repartidor_id) === Number(usuario.id))
       .filter((pedido) => !estado || pedido.estado === estado)
       .filter((pedido) => !canal || pedido.canal === canal)
       .filter((pedido) => !tipoConsumo || pedido.tipo_consumo === tipoConsumo)
@@ -976,6 +986,9 @@ async function listPedidos(query = {}) {
   }
 
   const filters = {};
+  if (soloPropias) {
+    filters.repartidor_id = Number(usuario.id);
+  }
   if (estado) {
     filters.estado = estado;
   }

@@ -36,6 +36,7 @@ const FILES_BASE = [
   'migrations/018_cobro_requiere_entrega.sql',
   'migrations/019_imagenes.sql',
   'migrations/020_caja_unificada.sql',
+  'migrations/021_liquidaciones_pedidos.sql',
   'seed.sql',
 ];
 
@@ -114,13 +115,13 @@ async function verificar(client) {
     resultado[nombre] = rows[0].n;
   }
 
-  // Referencia calculada desde las migraciones (001–016):
+  // Referencia calculada desde las migraciones (001–021):
   //   29 tablas del modelo
   //   +1 `liquidaciones` y +1 `devolucion_reembolsos` (009) = 31
   //   27 ENUM (001) + enum_estacion/enum_curso (013) ya incluidos
-  //   51 FK (001: 45, 004: 1, 009: 4, 013: 1)
+  //   52 FK (001: 45, 004: 1, 009: 4, 013: 1, 021: 1)
   // Puede haber tablas extra fuera del modelo (p. ej. `mensajes`): no es error.
-  const REFERENCIA = { tablas: 31, enums: 27, fks: 51 };
+  const REFERENCIA = { tablas: 31, enums: 27, fks: 52 };
 
   console.log('\n[db:apply] Verificación (referencia de las migraciones):');
   console.log(`  Tablas: ${resultado.tablas} (referencia ${REFERENCIA.tablas})`);
