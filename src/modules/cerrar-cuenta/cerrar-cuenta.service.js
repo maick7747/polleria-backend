@@ -14,6 +14,7 @@ const {
 const pedidosLib = require('../../lib/pedidos');
 const pedidosDb = require('../../lib/pedidos-db');
 const cuentaTotales = require('../../lib/cuenta-totales');
+const cuentaUniversal = require('../../lib/cuenta-universal');
 const { generarBoletaPdf } = require('../../lib/boletaPdf');
 const sunat = require('../../lib/sunat');
 
@@ -215,6 +216,28 @@ async function listPagos(id) {
   };
 }
 
+// U-15 (semana 15): el mostrador se cobra al recoger el pedido. Si cocina ya
+// marcó todas las líneas como listas, la entrega se confirma en el mismo acto
+// del cobro; así la Caja no exige pasar antes por "Pedidos listos" ni responde
+// 409 por una regla que el aviso de la pantalla no anuncia.
+async function prepararEntregaMostrador(cuenta, rondas, usuario) {
+  if (cuenta.tipo_servicio !== 'para_llevar') {
+    return;
+  }
+  for (const pedido of rondas) {
+    const pendientes = await cuentaUniversal.lineasPendientesDeListo(pedido.id);
+    if (pendientes.length > 0) {
+      throw new AppError(
+        409,
+        'PLATOS_NO_LISTOS',
+        `Faltan ${pendientes.length} plato(s) por estar listos.`,
+        [{ pedido_id: pedido.id, pendientes: pendientes.length }],
+      );
+    }
+    await cuentaUniversal.marcarLineasEntregadas(pedido.id, usuario.id);
+  }
+}
+
 async function cobrarCuenta(id, body, usuario) {
   const payload = body && typeof body === 'object' ? body : {};
 
@@ -239,6 +262,9 @@ async function cobrarCuenta(id, body, usuario) {
     if (rondas.length === 0) {
       throw new AppError(422, 'BUSINESS_RULE_VIOLATION', 'La cuenta no tiene pedidos para cobrar.');
     }
+
+    // Mostrador: listo = entregado al cobrar (U-15).
+    await prepararEntregaMostrador(cuenta, rondas, usuario);
 
     // Regla de negocio: solo se cobra cuando TODOS los platos fueron
     // entregados. Cada línea trae su propio `entregado_en` (KDS v2).
@@ -324,6 +350,9 @@ async function cobrarCuenta(id, body, usuario) {
   if (rondas.length === 0) {
     throw new AppError(422, 'BUSINESS_RULE_VIOLATION', 'La cuenta no tiene pedidos para cobrar.');
   }
+
+  // Mostrador: listo = entregado al cobrar (U-15).
+  await prepararEntregaMostrador(cuenta, rondas, usuario);
 
   // Mismo candado que la rama en memoria: nada se cobra sin entregar.
   await cuentaTotales.validarTodoEntregado(cuenta.id, rondas);

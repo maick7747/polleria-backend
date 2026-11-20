@@ -108,12 +108,18 @@ function separador(doc, caracter = '-') {
 
 function fila(doc, etiqueta, valor, opciones = {}) {
   const y = doc.y;
+  // La columna de valores admite 19 caracteres a 7.5 pt Courier sin desbordar
+  // el ancho de 80 mm. Un nombre de cliente largo partía la línea y se montaba
+  // sobre el separador; aquí se recorta antes de dibujar.
+  const recortado = texto(valor).length > 19
+    ? `${texto(valor).slice(0, 18)}.`
+    : texto(valor);
   doc
     .font(opciones.bold ? 'Courier-Bold' : 'Courier')
     .fontSize(opciones.size || 7.5)
     .fillColor('#000000')
     .text(etiqueta, MARGEN, y, {
-      width: ANCHO_CONTENIDO - 70,
+      width: ANCHO_CONTENIDO - 86,
       lineBreak: false,
       ellipsis: true,
     });
@@ -121,8 +127,8 @@ function fila(doc, etiqueta, valor, opciones = {}) {
     .font(opciones.boldValor ? 'Courier-Bold' : 'Courier')
     .fontSize(opciones.size || 7.5)
     .fillColor('#000000')
-    .text(valor, MARGEN + ANCHO_CONTENIDO - 70, y, {
-      width: 70,
+    .text(recortado, MARGEN + ANCHO_CONTENIDO - 86, y, {
+      width: 86,
       align: 'right',
       lineBreak: false,
     });
